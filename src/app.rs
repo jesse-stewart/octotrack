@@ -1,4 +1,4 @@
-use std::{error, io::{self, Write}, path::PathBuf, process::Command};
+use std::{error, path::PathBuf, process::Command};
 use walkdir::WalkDir;
 use crate::audio::AudioPlayer;
 

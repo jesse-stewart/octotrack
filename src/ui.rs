@@ -59,7 +59,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
                 .border_type(BorderType::Double)
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::Black)) // Set border color to black
-                .style(Style::default().fg(Color::Black).bg(COLOR_AMBER[2]))
+                .style(Style::default().fg(Color::Black).bg(COLOR_AMBER[0]))
                 .padding(Padding::new(2, 2, 1, 0)),
         )
         .bold();
