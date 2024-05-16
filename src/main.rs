@@ -24,6 +24,7 @@ fn main() -> AppResult<()> {
 
         // Render the user interface.
         tui.draw(&mut app)?;
+        app.get_metadata();
         // Handle events.
         match tui.events.next()? {
             Event::Tick => app.tick(),

@@ -14,7 +14,7 @@ pub fn handle_key_events(key_event: KeyEvent, app: &mut App) -> AppResult<()> {
                 app.quit();
             }
         }
-        KeyCode::Char('p') => {
+        KeyCode::Char(' ') => {
             app.play()
         }
         KeyCode::Char('s') => {

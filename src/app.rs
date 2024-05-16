@@ -1,7 +1,5 @@
-use std::{error, io::Write, path::PathBuf};
-
+use std::{error, io::{self, Write}, path::PathBuf, process::Command};
 use walkdir::WalkDir;
-
 use crate::audio::AudioPlayer;
 
 /// Application result type.
@@ -55,6 +53,7 @@ impl App {
         if self.current_track_index + 1 < self.track_list.len() {
             self.current_track_index += 1;
         }
+        self.get_metadata();
         if self.is_playing {
             self.stop().unwrap();
             self.play();
@@ -65,6 +64,7 @@ impl App {
         if self.current_track_index > 0 {
             self.current_track_index -= 1;
         }
+        self.get_metadata();
         if self.is_playing {
             self.stop().unwrap();
             self.play();
@@ -108,24 +108,34 @@ impl App {
 
 
     pub fn play(&mut self) {
-        if !self.is_playing {
-            if let Some(current_track) = self.track_list.get(self.current_track_index) {
-                let meta_info = self.audio_player.get_metadata(current_track).unwrap();
-                self.track_title = meta_info["format"]["tags"]["TITLE"].as_str().unwrap_or(current_track.to_str().unwrap()).to_string();
-                self.track_artist = meta_info["format"]["tags"]["ARTIST"].as_str().unwrap_or("").to_string();
-                self.comment = meta_info["format"]["tags"]["comment"].as_str().unwrap_or("").to_string();
-                self.track_channel_count = meta_info["streams"][0]["channels"].as_u64().unwrap_or(0) as u32;
-
-                // write meta_info to a file
-                let mut file = std::fs::File::create("meta_info.json").unwrap();
-                file.write_all(serde_json::to_string(&meta_info).unwrap().as_bytes()).unwrap();
-
+        if let Some(current_track) = self.track_list.get(self.current_track_index) {
+            if !self.is_playing {
                 self.audio_player.play(current_track, self.track_channel_count).unwrap();
                 self.is_playing = true;
             }
         }
     }
 
+    pub fn get_metadata(&mut self) {
+        let file_path = self.track_list[self.current_track_index].to_str().unwrap();
+        let meta_info = Command::new("ffprobe")
+            .arg("-v")
+            .arg("error")
+            .arg("-show_format")
+            .arg("-show_streams")
+            .arg("-of")
+            .arg("json")
+            .arg(file_path)
+            .output()
+            .unwrap()
+            .stdout;
+        let meta_info: std::borrow::Cow<str> = String::from_utf8_lossy(&meta_info);
+        let meta_info: serde_json::Value = serde_json::from_str(&meta_info).unwrap();
+        self.track_title = meta_info["format"]["tags"]["TITLE"].as_str().unwrap_or(file_path).to_string();
+        self.track_artist = meta_info["format"]["tags"]["ARTIST"].as_str().unwrap_or("").to_string();
+        self.comment = meta_info["format"]["tags"]["comment"].as_str().unwrap_or("").to_string();
+        self.track_channel_count = meta_info["streams"][0]["channels"].as_u64().unwrap_or(0) as u32;
+    }
 
     pub fn stop(&mut self) -> AppResult<()> {
         self.audio_player.stop()?;

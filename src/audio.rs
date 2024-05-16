@@ -56,20 +56,4 @@ impl AudioPlayer {
         }
     }
 
-    pub fn get_metadata(&self, file_path: &PathBuf) -> io::Result<serde_json::Value> {
-        let meta_info = Command::new("ffprobe")
-            .arg("-v")
-            .arg("error")
-            .arg("-show_format")
-            .arg("-show_streams")
-            .arg("-of")
-            .arg("json")
-            .arg(file_path)
-            .output()?
-            .stdout;
-        let meta_info: std::borrow::Cow<str> = String::from_utf8_lossy(&meta_info);
-        let meta_info: serde_json::Value = serde_json::from_str(&meta_info).unwrap();
-        Ok(meta_info)
-    }
-
 }
