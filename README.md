@@ -3,7 +3,7 @@
 The simple template will create the following project structure:
 
 ```bash
-sudo apt-get install mpv libmpv-dev
+sudo apt-get install mpv libmpv-dev mplayer
 ```
 
 ```text
