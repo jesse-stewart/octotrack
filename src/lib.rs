@@ -15,3 +15,6 @@ pub mod tui;
 
 /// Event handler.
 pub mod handler;
+
+/// Big text widget.
+pub mod bigtext;

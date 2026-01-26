@@ -1,4 +1,5 @@
 use crate::app::{App, LoopMode};
+use crate::bigtext::BigText;
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Style, Stylize},
@@ -24,9 +25,8 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         .direction(Direction::Vertical)
         .margin(1)
         .constraints([
-            Constraint::Length(4), // Height for the title bar
+            Constraint::Length(7), // Height for the title bar (big text)
             Constraint::Length(3), // Height for the progress gauge
-            Constraint::Length(3), // Height for info
             Constraint::Min(0),    // Channel meters (dynamic)
             Constraint::Length(3), // Height for the status bar
         ])
@@ -42,18 +42,14 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         .constraints([Constraint::Min(1)])
         .split(chunks[1]);
 
-    let info_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(1)])
-        .split(chunks[2]);
-
     let meter_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Min(1),     // Channel levels
-            Constraint::Length(12), // Volume indicator
+            Constraint::Length(9), // Volume indicator
+            Constraint::Length(17), // Info sidebar
         ])
-        .split(chunks[3]);
+        .split(chunks[2]);
 
     let status_chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -64,20 +60,37 @@ pub fn render(app: &mut App, frame: &mut Frame) {
             Constraint::Percentage(20),
             Constraint::Percentage(20),
         ])
-        .split(chunks[4]);
+        .split(chunks[3]);
 
-    // Create the title bar widget
-    let title_bar = Paragraph::new(format!("{}\n{}\n", app.track_title, app.track_artist))
-        .block(
-            Block::default()
-                .title("Octotrack")
-                .title_alignment(Alignment::Center)
-                .border_type(BorderType::Double)
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Black))
-                .style(Style::default().fg(Color::Black).bg(COLOR_AMBER[0]))
-        )
-        .bold();
+    // Create the title bar widget with big text
+    let mut title_text = if app.track_title.is_empty() {
+        "No Track".to_string()
+    } else {
+        app.track_title.clone()
+    };
+
+    // Remove "tracks/" prefix if present
+    if title_text.starts_with("tracks/") {
+        title_text = title_text.strip_prefix("tracks/").unwrap_or(&title_text).to_string();
+    }
+
+    // Truncate if too long (limit to ~12 chars for small screen)
+    if title_text.len() > 32 {
+        title_text.truncate(32);
+    }
+
+    let title_block = Block::default()
+        .title("Octotrack")
+        .title_alignment(Alignment::Center)
+        .border_type(BorderType::Double)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Black))
+        .style(Style::default().bg(Color::Black));
+
+    let title_bar = BigText::new(
+        title_text,
+        Style::default().fg(COLOR_AMBER[0]).bg(Color::Black)
+    );
 
     // Create the progress gauge
     let (progress_ratio, time_text) = if let (Some(pos), Some(dur)) = (app.current_position, app.track_duration) {
@@ -111,7 +124,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     };
 
     let info_content = Paragraph::new(format!(
-        "{}    Index: {}/{}    Channels: {}    Loop: {}",
+        "Time:\n{}\n\nTrack:\n{}/{}\n\nChannels:\n{}\n\nLoop:\n{}",
         time_text,
         app.current_track_index + 1,
         app.track_list.len(),
@@ -120,9 +133,8 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     ))
     .block(
         Block::default()
-            .border_type(BorderType::Rounded)
-            .borders(Borders::ALL)
-            .padding(Padding::new(1, 1, 0, 0)),
+            .title_alignment(Alignment::Left)
+            .padding(Padding::new(0, 0, 0, 0)),
     );
 
     // Create channel meters using BarChart
@@ -196,9 +208,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
             Block::default()
                 .title("Volume")
                 .title_alignment(Alignment::Center)
-                .border_type(BorderType::Rounded)
-                .borders(Borders::ALL)
-                .padding(Padding::new(1, 1, 0, 0)),
+                .padding(Padding::new(2, 1, 1, 0)),
         )
         .data(BarGroup::default().bars(&[volume_bar]))
         .bar_width(5)
@@ -271,11 +281,13 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         .alignment(Alignment::Center);
 
     // Render each widget in its respective area
-    frame.render_widget(title_bar, title_chunks[0]);
+    frame.render_widget(title_block.clone(), title_chunks[0]);
+    let title_inner = title_block.inner(title_chunks[0]);
+    frame.render_widget(title_bar, title_inner);
     frame.render_widget(progress_gauge, progress_chunks[0]);
-    frame.render_widget(info_content, info_chunks[0]);
     // Channel meters are already rendered above
     frame.render_widget(volume_chart, meter_chunks[1]);
+    frame.render_widget(info_content, meter_chunks[2]);
     frame.render_widget(status_content_1, status_chunks[0]);
     frame.render_widget(status_content_2, status_chunks[1]);
     frame.render_widget(status_content_3, status_chunks[2]);
