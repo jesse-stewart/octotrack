@@ -1,6 +1,7 @@
-use std::{error, path::PathBuf, process::Command};
+use std::{error, path::PathBuf, process::Command, fs};
 use walkdir::WalkDir;
 use crate::audio::AudioPlayer;
+use serde_json::{json, Value};
 
 /// Application result type.
 pub type AppResult<T> = std::result::Result<T, Box<dyn error::Error>>;
@@ -25,6 +26,7 @@ pub struct App {
     pub comment: String,
     pub track_channel_count: u32,
     pub loop_mode: LoopMode,
+    pub volume: u8, // Master volume 0-100
 }
 
 impl Default for App {
@@ -40,6 +42,7 @@ impl Default for App {
             comment: String::new(),
             track_channel_count: 0,
             loop_mode: LoopMode::NoLoop,
+            volume: 100, // Start at 100%
         }
     }
 }
@@ -47,7 +50,9 @@ impl Default for App {
 impl App {
     /// Constructs a new instance of [`App`].
     pub fn new() -> Self {
-        Self::default()
+        let mut app = Self::default();
+        let _ = app.load_config();
+        app
     }
 
     /// Handles the tick event of the terminal.
@@ -90,6 +95,18 @@ impl App {
             LoopMode::LoopSingle => LoopMode::LoopAll,
             LoopMode::LoopAll => LoopMode::NoLoop,
         };
+    }
+
+    pub fn increase_volume(&mut self) {
+        self.volume = (self.volume + 1).min(100);
+        let _ = self.audio_player.set_volume(self.volume);
+        let _ = self.save_config();
+    }
+
+    pub fn decrease_volume(&mut self) {
+        self.volume = self.volume.saturating_sub(1);
+        let _ = self.audio_player.set_volume(self.volume);
+        let _ = self.save_config();
     }
 
     pub fn load_tracks(&mut self, folder_path: &str) -> AppResult<()> {
@@ -158,7 +175,7 @@ impl App {
     pub fn play(&mut self) {
         if let Some(current_track) = self.track_list.get(self.current_track_index) {
             if !self.is_playing {
-                self.audio_player.play(current_track, self.track_channel_count).unwrap();
+                self.audio_player.play(current_track, self.track_channel_count, self.volume).unwrap();
                 self.is_playing = true;
             }
         }
@@ -285,6 +302,43 @@ impl App {
                 }
             }
         }
+    }
+
+    fn get_config_path() -> PathBuf {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        PathBuf::from(home).join(".config").join("octotrack").join("config.json")
+    }
+
+    pub fn load_config(&mut self) -> AppResult<()> {
+        let config_path = Self::get_config_path();
+
+        if config_path.exists() {
+            let config_str = fs::read_to_string(config_path)?;
+            let config: Value = serde_json::from_str(&config_str)?;
+
+            if let Some(volume) = config["volume"].as_u64() {
+                self.volume = volume as u8;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn save_config(&self) -> AppResult<()> {
+        let config_path = Self::get_config_path();
+
+        // Create config directory if it doesn't exist
+        if let Some(parent) = config_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let config = json!({
+            "volume": self.volume
+        });
+
+        fs::write(config_path, serde_json::to_string_pretty(&config)?)?;
+
+        Ok(())
     }
 
 }

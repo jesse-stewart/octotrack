@@ -74,11 +74,12 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     };
 
     let main_content_1 = Paragraph::new(format!(
-        "Index: {}/{}    Channels: {}    Loop: {}",
+        "Index: {}/{}    Channels: {}    Loop: {}    Volume: {}%",
         app.current_track_index + 1,
         app.track_list.len(),
         app.track_channel_count,
         loop_text,
+        app.volume,
     ))
     .block(
         Block::default()

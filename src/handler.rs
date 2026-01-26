@@ -26,6 +26,13 @@ pub fn handle_key_events(key_event: KeyEvent, app: &mut App) -> AppResult<()> {
         KeyCode::Char('f') => {
 
         }
+        // Volume control
+        KeyCode::Up => {
+            app.increase_volume();
+        }
+        KeyCode::Down => {
+            app.decrease_volume();
+        }
         // Track handlers
         KeyCode::Right => {
             app.increment_track();
