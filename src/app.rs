@@ -73,8 +73,10 @@ impl App {
 
     pub fn load_tracks(&mut self, folder_path: &str) -> AppResult<()> {
         let mut tracks = vec![];
-    
+
         for entry in WalkDir::new(folder_path)
+            .min_depth(1)
+            .max_depth(1)
             .sort_by(|a, b| a.file_name().cmp(b.file_name())) // Sort entries alphabetically by file name
         {
             let entry = match entry {
@@ -83,25 +85,50 @@ impl App {
                     continue; // Skip this entry and log the error
                 }
             };
-    
+
             let path = entry.path();
-            if path.is_file() {
-                let is_hidden = path.file_name()
-                    .map(|name| name.to_string_lossy().starts_with('.'))
-                    .unwrap_or(true); // Assume hidden if there's any issue getting the file name
-    
+            let is_hidden = path.file_name()
+                .map(|name| name.to_string_lossy().starts_with('.'))
+                .unwrap_or(true);
+
+            if is_hidden {
+                continue;
+            }
+
+            // Check if it's a directory with audio files
+            if path.is_dir() {
+                let has_audio_files = std::fs::read_dir(path)
+                    .ok()
+                    .map(|entries| {
+                        entries
+                            .filter_map(|e| e.ok())
+                            .any(|e| {
+                                e.path().extension()
+                                    .map_or(false, |ext| ext.eq_ignore_ascii_case("mp3")
+                                        || ext.eq_ignore_ascii_case("wav")
+                                        || ext.eq_ignore_ascii_case("flac"))
+                            })
+                    })
+                    .unwrap_or(false);
+
+                if has_audio_files {
+                    tracks.push(path.to_path_buf());
+                }
+            } else if path.is_file() {
                 let valid_extension = path.extension()
-                    .map_or(false, |ext| ext.eq_ignore_ascii_case("mp3") || ext.eq_ignore_ascii_case("wav") || ext.eq_ignore_ascii_case("flac"));
-    
-                if !is_hidden && valid_extension {
+                    .map_or(false, |ext| ext.eq_ignore_ascii_case("mp3")
+                        || ext.eq_ignore_ascii_case("wav")
+                        || ext.eq_ignore_ascii_case("flac"));
+
+                if valid_extension {
                     tracks.push(path.to_path_buf());
                 }
             }
         }
-    
+
         tracks.sort();
         self.track_list = tracks;
-    
+
         Ok(())
     }
 
@@ -117,24 +144,93 @@ impl App {
     }
 
     pub fn get_metadata(&mut self) {
-        let file_path = self.track_list[self.current_track_index].to_str().unwrap();
-        let meta_info = Command::new("ffprobe")
-            .arg("-v")
-            .arg("error")
-            .arg("-show_format")
-            .arg("-show_streams")
-            .arg("-of")
-            .arg("json")
-            .arg(file_path)
-            .output()
-            .unwrap()
-            .stdout;
-        let meta_info: std::borrow::Cow<str> = String::from_utf8_lossy(&meta_info);
-        let meta_info: serde_json::Value = serde_json::from_str(&meta_info).unwrap();
-        self.track_title = meta_info["format"]["tags"]["TITLE"].as_str().unwrap_or(file_path).to_string();
-        self.track_artist = meta_info["format"]["tags"]["ARTIST"].as_str().unwrap_or("").to_string();
-        self.comment = meta_info["format"]["tags"]["comment"].as_str().unwrap_or("").to_string();
-        self.track_channel_count = meta_info["streams"][0]["channels"].as_u64().unwrap_or(0) as u32;
+        let track_path = &self.track_list[self.current_track_index];
+
+        // If it's a directory, get metadata from the first audio file
+        if track_path.is_dir() {
+            // Get all audio files in the directory
+            let audio_files: Vec<PathBuf> = std::fs::read_dir(track_path)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.extension()
+                        .map_or(false, |ext| ext.eq_ignore_ascii_case("mp3")
+                            || ext.eq_ignore_ascii_case("wav")
+                            || ext.eq_ignore_ascii_case("flac"))
+                })
+                .collect();
+
+            if audio_files.is_empty() {
+                self.track_title = track_path.file_name().unwrap().to_string_lossy().to_string();
+                self.track_artist = String::new();
+                self.comment = "Multi-file track".to_string();
+                self.track_channel_count = 8; // Default for multi-file tracks
+                return;
+            }
+
+            // Use first file for metadata, but calculate total channel count
+            let first_file = audio_files[0].clone();
+            let total_channels: u32 = audio_files.iter()
+                .filter_map(|file| {
+                    let meta = Command::new("ffprobe")
+                        .arg("-v")
+                        .arg("error")
+                        .arg("-show_streams")
+                        .arg("-of")
+                        .arg("json")
+                        .arg(file)
+                        .output()
+                        .ok()?;
+                    let meta_str = String::from_utf8_lossy(&meta.stdout);
+                    let meta_json: serde_json::Value = serde_json::from_str(&meta_str).ok()?;
+                    meta_json["streams"][0]["channels"].as_u64().map(|c| c as u32)
+                })
+                .sum();
+
+            self.track_channel_count = total_channels;
+
+            let meta_info = Command::new("ffprobe")
+                .arg("-v")
+                .arg("error")
+                .arg("-show_format")
+                .arg("-show_streams")
+                .arg("-of")
+                .arg("json")
+                .arg(&first_file)
+                .output()
+                .unwrap()
+                .stdout;
+            let meta_info: std::borrow::Cow<str> = String::from_utf8_lossy(&meta_info);
+            let meta_info: serde_json::Value = serde_json::from_str(&meta_info).unwrap();
+
+            let fallback_title = track_path.file_name().unwrap().to_string_lossy().to_string();
+
+            self.track_title = meta_info["format"]["tags"]["TITLE"].as_str().unwrap_or(&fallback_title).to_string();
+            self.track_artist = meta_info["format"]["tags"]["ARTIST"].as_str().unwrap_or("").to_string();
+            self.comment = meta_info["format"]["tags"]["comment"].as_str().unwrap_or("").to_string();
+        } else {
+            let meta_info = Command::new("ffprobe")
+                .arg("-v")
+                .arg("error")
+                .arg("-show_format")
+                .arg("-show_streams")
+                .arg("-of")
+                .arg("json")
+                .arg(track_path)
+                .output()
+                .unwrap()
+                .stdout;
+            let meta_info: std::borrow::Cow<str> = String::from_utf8_lossy(&meta_info);
+            let meta_info: serde_json::Value = serde_json::from_str(&meta_info).unwrap();
+
+            let fallback_title = track_path.to_str().unwrap().to_string();
+
+            self.track_title = meta_info["format"]["tags"]["TITLE"].as_str().unwrap_or(&fallback_title).to_string();
+            self.track_artist = meta_info["format"]["tags"]["ARTIST"].as_str().unwrap_or("").to_string();
+            self.comment = meta_info["format"]["tags"]["comment"].as_str().unwrap_or("").to_string();
+            self.track_channel_count = meta_info["streams"][0]["channels"].as_u64().unwrap_or(0) as u32;
+        }
     }
 
     pub fn stop(&mut self) -> AppResult<()> {
