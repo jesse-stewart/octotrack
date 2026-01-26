@@ -27,6 +27,9 @@ pub struct App {
     pub track_channel_count: u32,
     pub loop_mode: LoopMode,
     pub volume: u8, // Master volume 0-100
+    pub current_position: Option<f32>, // Current playback position in seconds
+    pub track_duration: Option<f32>, // Total track duration in seconds
+    pub channel_levels: Vec<f32>, // Per-channel RMS levels in dB
 }
 
 impl Default for App {
@@ -43,6 +46,9 @@ impl Default for App {
             track_channel_count: 0,
             loop_mode: LoopMode::NoLoop,
             volume: 100, // Start at 100%
+            current_position: None,
+            track_duration: None,
+            channel_levels: vec![],
         }
     }
 }
@@ -247,6 +253,8 @@ impl App {
             self.track_title = meta_info["format"]["tags"]["TITLE"].as_str().unwrap_or(&fallback_title).to_string();
             self.track_artist = meta_info["format"]["tags"]["ARTIST"].as_str().unwrap_or("").to_string();
             self.comment = meta_info["format"]["tags"]["comment"].as_str().unwrap_or("").to_string();
+            self.track_duration = meta_info["format"]["duration"].as_str()
+                .and_then(|d| d.parse::<f32>().ok());
         } else {
             let meta_info = Command::new("ffprobe")
                 .arg("-v")
@@ -268,7 +276,12 @@ impl App {
             self.track_artist = meta_info["format"]["tags"]["ARTIST"].as_str().unwrap_or("").to_string();
             self.comment = meta_info["format"]["tags"]["comment"].as_str().unwrap_or("").to_string();
             self.track_channel_count = meta_info["streams"][0]["channels"].as_u64().unwrap_or(0) as u32;
+            self.track_duration = meta_info["format"]["duration"].as_str()
+                .and_then(|d| d.parse::<f32>().ok());
         }
+
+        // Initialize channel levels vector
+        self.channel_levels = vec![-60.0; self.track_channel_count as usize];
     }
 
     pub fn stop(&mut self) -> AppResult<()> {
@@ -301,6 +314,13 @@ impl App {
                     self.play();
                 }
             }
+        }
+    }
+
+    pub fn update_playback_info(&mut self) {
+        if self.is_playing {
+            self.current_position = self.audio_player.get_time_pos().ok();
+            self.channel_levels = self.audio_player.get_channel_levels();
         }
     }
 

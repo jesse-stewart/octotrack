@@ -19,12 +19,17 @@ fn main() -> AppResult<()> {
     app.load_tracks("tracks").unwrap();
     
 
+    // Get initial track metadata
+    app.get_metadata();
+
     // Start the main loop.
     while app.running {
+        // Update playback info (position and levels)
+        app.update_playback_info();
 
         // Render the user interface.
         tui.draw(&mut app)?;
-        app.get_metadata();
+
         // Check if track finished and handle looping
         app.check_playback_status();
 

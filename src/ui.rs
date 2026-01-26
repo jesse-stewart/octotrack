@@ -2,7 +2,7 @@ use crate::app::{App, LoopMode};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Style, Stylize},
-    widgets::{Block, BorderType, Borders, Padding, Paragraph},
+    widgets::{Block, BorderType, Borders, Padding, Paragraph, Gauge, Bar, BarChart, BarGroup},
     Frame,
 };
 
@@ -22,10 +22,12 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     // Define the layout constraints for each section
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .margin(1) // optional: adds a margin around the whole layout
+        .margin(1)
         .constraints([
             Constraint::Length(7), // Height for the title bar
-            Constraint::Min(0),    // Remaining space for the main content
+            Constraint::Length(3), // Height for the progress gauge
+            Constraint::Length(3), // Height for info
+            Constraint::Min(0),    // Channel meters (dynamic)
             Constraint::Length(3), // Height for the status bar
         ])
         .split(frame.size());
@@ -35,10 +37,20 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         .constraints([Constraint::Min(1)])
         .split(chunks[0]);
 
-    let main_content_chunks = Layout::default()
+    let progress_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Min(1)])
         .split(chunks[1]);
+
+    let info_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(1)])
+        .split(chunks[2]);
+
+    let meter_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(1)])
+        .split(chunks[3]);
 
     let status_chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -49,9 +61,9 @@ pub fn render(app: &mut App, frame: &mut Frame) {
             Constraint::Percentage(20),
             Constraint::Percentage(20),
         ])
-        .split(chunks[2]);
+        .split(chunks[4]);
 
-    // Create the title bar widget\
+    // Create the title bar widget
     let title_bar = Paragraph::new(format!("{}\n{}\n", app.track_title, app.track_artist))
         .block(
             Block::default()
@@ -59,27 +71,63 @@ pub fn render(app: &mut App, frame: &mut Frame) {
                 .title_alignment(Alignment::Center)
                 .border_type(BorderType::Double)
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Black)) // Set border color to black
+                .border_style(Style::default().fg(Color::Black))
                 .style(Style::default().fg(Color::Black).bg(COLOR_AMBER[0]))
                 .padding(Padding::new(2, 2, 1, 0)),
         )
         .bold();
 
+    // Create the progress gauge
+    let (progress_ratio, time_text) = if let (Some(pos), Some(dur)) = (app.current_position, app.track_duration) {
+        let ratio = if dur > 0.0 { (pos / dur).min(1.0) as f64 } else { 0.0 };
+        let current_min = (pos / 60.0) as u32;
+        let current_sec = (pos % 60.0) as u32;
+        let total_min = (dur / 60.0) as u32;
+        let total_sec = (dur % 60.0) as u32;
+        let text = format!("{}:{:02} / {}:{:02}", current_min, current_sec, total_min, total_sec);
+        (ratio, text)
+    } else {
+        (0.0, "--:-- / --:--".to_string())
+    };
 
-    // Create the main content widgets for each column
+    let progress_gauge = Gauge::default()
+        .block(
+            Block::default()
+                .title("Progress")
+                .title_alignment(Alignment::Left)
+                .border_type(BorderType::Rounded)
+                .borders(Borders::ALL),
+        )
+        .gauge_style(Style::default().fg(COLOR_AMBER[0]).bg(Color::Black))
+        .ratio(progress_ratio)
+        .label(time_text);
+
+    // Create the info content
     let loop_text = match app.loop_mode {
         LoopMode::NoLoop => "Off",
         LoopMode::LoopSingle => "Single",
         LoopMode::LoopAll => "All",
     };
 
-    let main_content_1 = Paragraph::new(format!(
-        "Index: {}/{}    Channels: {}    Loop: {}    Volume: {}%",
+    // Debug: show raw channel values
+    let levels_debug = if app.channel_levels.len() > 0 {
+        let levels_str: Vec<String> = app.channel_levels.iter()
+            .take(4)
+            .map(|&l| format!("{:.1}", l))
+            .collect();
+        format!(" [{}]", levels_str.join(", "))
+    } else {
+        String::new()
+    };
+
+    let info_content = Paragraph::new(format!(
+        "Index: {}/{}    Channels: {}    Loop: {}    Volume: {}%{}",
         app.current_track_index + 1,
         app.track_list.len(),
         app.track_channel_count,
         loop_text,
         app.volume,
+        levels_debug,
     ))
     .block(
         Block::default()
@@ -87,6 +135,65 @@ pub fn render(app: &mut App, frame: &mut Frame) {
             .borders(Borders::ALL)
             .padding(Padding::new(1, 1, 0, 0)),
     );
+
+    // Create channel meters using BarChart
+    let channel_count = app.channel_levels.len().min(app.track_channel_count as usize);
+
+    let bar_chart_block = Block::default()
+        .title("Channel Levels (dB)")
+        .title_alignment(Alignment::Left)
+        .border_type(BorderType::Rounded)
+        .borders(Borders::ALL)
+        .padding(Padding::new(1, 1, 0, 0));
+
+    if channel_count > 0 && app.is_playing {
+        let bars: Vec<Bar> = app.channel_levels.iter().enumerate().take(channel_count)
+            .map(|(i, &level)| {
+                // Convert dB to a display value (0-60 range for visualization)
+                let level_clamped = level.max(-60.0).min(0.0);
+                let display_value = (level_clamped + 60.0) as u64;
+
+                // Choose color based on level
+                let color = if level > -6.0 {
+                    Color::Red  // Clipping warning
+                } else if level > -12.0 {
+                    COLOR_AMBER[0]  // Good level
+                } else if level > -24.0 {
+                    Color::Yellow  // Medium level
+                } else {
+                    Color::Green  // Low level
+                };
+
+                let label = format!("Ch{} {:.0}dB", i + 1, level);
+
+                Bar::default()
+                    .value(display_value)
+                    .label(label.into())
+                    .style(Style::default().fg(color))
+                    .value_style(Style::default().fg(color).bold())
+            })
+            .collect();
+
+        let bar_chart = BarChart::default()
+            .block(bar_chart_block)
+            .data(BarGroup::default().bars(&bars))
+            .bar_width(3)
+            .bar_gap(1)
+            .max(60);  // -60dB to 0dB range
+
+        frame.render_widget(bar_chart, meter_chunks[0]);
+    } else {
+        // Show placeholder when not playing
+        let placeholder = Paragraph::new(if !app.is_playing {
+            "Press [Space] to start playback"
+        } else {
+            "Initializing meters..."
+        })
+        .block(bar_chart_block)
+        .alignment(Alignment::Center);
+
+        frame.render_widget(placeholder, meter_chunks[0]);
+    }
 
     let status_content_1 = Paragraph::new("[←] Prev")
         .block(
@@ -156,7 +263,9 @@ pub fn render(app: &mut App, frame: &mut Frame) {
 
     // Render each widget in its respective area
     frame.render_widget(title_bar, title_chunks[0]);
-    frame.render_widget(main_content_1, main_content_chunks[0]);
+    frame.render_widget(progress_gauge, progress_chunks[0]);
+    frame.render_widget(info_content, info_chunks[0]);
+    // Channel meters are already rendered above
     frame.render_widget(status_content_1, status_chunks[0]);
     frame.render_widget(status_content_2, status_chunks[1]);
     frame.render_widget(status_content_3, status_chunks[2]);
