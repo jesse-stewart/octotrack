@@ -44,7 +44,7 @@ impl Default for App {
             track_artist: String::new(),
             comment: String::new(),
             track_channel_count: 0,
-            loop_mode: LoopMode::NoLoop,
+            loop_mode: LoopMode::LoopSingle,
             volume: 100, // Start at 100%
             current_position: None,
             track_duration: None,

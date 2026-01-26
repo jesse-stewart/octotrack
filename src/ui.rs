@@ -24,7 +24,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         .direction(Direction::Vertical)
         .margin(1)
         .constraints([
-            Constraint::Length(7), // Height for the title bar
+            Constraint::Length(4), // Height for the title bar
             Constraint::Length(3), // Height for the progress gauge
             Constraint::Length(3), // Height for info
             Constraint::Min(0),    // Channel meters (dynamic)
@@ -49,7 +49,10 @@ pub fn render(app: &mut App, frame: &mut Frame) {
 
     let meter_chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(1)])
+        .constraints([
+            Constraint::Min(1),     // Channel levels
+            Constraint::Length(12), // Volume indicator
+        ])
         .split(chunks[3]);
 
     let status_chunks = Layout::default()
@@ -73,7 +76,6 @@ pub fn render(app: &mut App, frame: &mut Frame) {
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::Black))
                 .style(Style::default().fg(Color::Black).bg(COLOR_AMBER[0]))
-                .padding(Padding::new(2, 2, 1, 0)),
         )
         .bold();
 
@@ -99,8 +101,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
                 .borders(Borders::ALL),
         )
         .gauge_style(Style::default().fg(COLOR_AMBER[0]).bg(Color::Black))
-        .ratio(progress_ratio)
-        .label(time_text);
+        .ratio(progress_ratio);
 
     // Create the info content
     let loop_text = match app.loop_mode {
@@ -109,25 +110,13 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         LoopMode::LoopAll => "All",
     };
 
-    // Debug: show raw channel values
-    let levels_debug = if app.channel_levels.len() > 0 {
-        let levels_str: Vec<String> = app.channel_levels.iter()
-            .take(4)
-            .map(|&l| format!("{:.1}", l))
-            .collect();
-        format!(" [{}]", levels_str.join(", "))
-    } else {
-        String::new()
-    };
-
     let info_content = Paragraph::new(format!(
-        "Index: {}/{}    Channels: {}    Loop: {}    Volume: {}%{}",
+        "{}    Index: {}/{}    Channels: {}    Loop: {}",
+        time_text,
         app.current_track_index + 1,
         app.track_list.len(),
         app.track_channel_count,
         loop_text,
-        app.volume,
-        levels_debug,
     ))
     .block(
         Block::default()
@@ -194,6 +183,26 @@ pub fn render(app: &mut App, frame: &mut Frame) {
 
         frame.render_widget(placeholder, meter_chunks[0]);
     }
+
+    // Create volume indicator (vertical bar)
+    let volume_bar = Bar::default()
+        .value(app.volume as u64)
+        .label(format!("{}%", app.volume).into())
+        .style(Style::default().fg(COLOR_AMBER[0]))
+        .value_style(Style::default().fg(COLOR_AMBER[0]).bold());
+
+    let volume_chart = BarChart::default()
+        .block(
+            Block::default()
+                .title("Volume")
+                .title_alignment(Alignment::Center)
+                .border_type(BorderType::Rounded)
+                .borders(Borders::ALL)
+                .padding(Padding::new(1, 1, 0, 0)),
+        )
+        .data(BarGroup::default().bars(&[volume_bar]))
+        .bar_width(5)
+        .max(100);
 
     let status_content_1 = Paragraph::new("[←] Prev")
         .block(
@@ -266,6 +275,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     frame.render_widget(progress_gauge, progress_chunks[0]);
     frame.render_widget(info_content, info_chunks[0]);
     // Channel meters are already rendered above
+    frame.render_widget(volume_chart, meter_chunks[1]);
     frame.render_widget(status_content_1, status_chunks[0]);
     frame.render_widget(status_content_2, status_chunks[1]);
     frame.render_widget(status_content_3, status_chunks[2]);
