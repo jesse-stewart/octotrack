@@ -31,6 +31,7 @@ pub struct App {
     pub current_position: Option<f32>, // Current playback position in seconds
     pub track_duration: Option<f32>, // Total track duration in seconds
     pub channel_levels: Vec<f32>, // Per-channel RMS levels in dB
+    pub show_quit_dialog: bool, // Show quit confirmation dialog
 }
 
 impl Default for App {
@@ -51,6 +52,7 @@ impl Default for App {
             current_position: None,
             track_duration: None,
             channel_levels: vec![],
+            show_quit_dialog: false, // Dialog hidden by default
         }
     }
 }

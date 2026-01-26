@@ -3,15 +3,30 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// Handles the key events and updates the state of [`App`].
 pub fn handle_key_events(key_event: KeyEvent, app: &mut App) -> AppResult<()> {
-    match key_event.code {
-        // Exit application on `ESC` or `q`
-        KeyCode::Esc | KeyCode::Char('q') => {
-            app.quit();
+    // If quit dialog is showing, handle dialog input
+    if app.show_quit_dialog {
+        match key_event.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                app.quit();
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                app.show_quit_dialog = false;
+            }
+            _ => {}
         }
-        // Exit application on `Ctrl-C`
+        return Ok(());
+    }
+
+    // Normal key handling
+    match key_event.code {
+        // Show quit confirmation dialog on `ESC` or `q`
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.show_quit_dialog = true;
+        }
+        // Show quit confirmation dialog on `Ctrl-C`
         KeyCode::Char('c') | KeyCode::Char('C') => {
             if key_event.modifiers == KeyModifiers::CONTROL {
-                app.quit();
+                app.show_quit_dialog = true;
             }
         }
         KeyCode::Char(' ') => {

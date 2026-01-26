@@ -1,9 +1,9 @@
 use crate::app::{App, LoopMode};
 use crate::bigtext::BigText;
 use ratatui::{
-    layout::{Alignment, Constraint, Direction, Layout},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Style, Stylize},
-    widgets::{Block, BorderType, Borders, Padding, Paragraph, Gauge, Bar, BarChart, BarGroup},
+    widgets::{Block, BorderType, Borders, Padding, Paragraph, Gauge, Bar, BarChart, BarGroup, Clear},
     Frame,
 };
 
@@ -315,4 +315,57 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     frame.render_widget(status_content_3, status_chunks[2]);
     frame.render_widget(status_content_4, status_chunks[3]);
     frame.render_widget(status_content_5, status_chunks[4]);
+
+    // Render quit confirmation dialog if showing
+    if app.show_quit_dialog {
+        render_quit_dialog(frame);
+    }
+}
+
+/// Renders a centered quit confirmation dialog
+fn render_quit_dialog(frame: &mut Frame) {
+    let area = centered_rect(50, 30, frame.size());
+
+    // Clear the area behind the dialog
+    frame.render_widget(Clear, area);
+
+    // Create the dialog block
+    let dialog_block = Block::default()
+        .title("Confirm Quit")
+        .title_alignment(Alignment::Center)
+        .borders(Borders::ALL)
+        .border_type(BorderType::Double)
+        .border_style(Style::default().fg(COLOR_AMBER[0]))
+        .style(Style::default().bg(Color::Black));
+
+    // Create the dialog content
+    let dialog_text = Paragraph::new(
+        "Are you sure you want to quit?\n\n\n\
+         [Y]es         [N]o"
+    )
+    .alignment(Alignment::Center)
+    .block(dialog_block);
+
+    frame.render_widget(dialog_text, area);
+}
+
+/// Helper function to create a centered rectangle
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(r);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(popup_layout[1])[1]
 }
