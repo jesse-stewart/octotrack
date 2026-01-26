@@ -5,6 +5,13 @@ use crate::audio::AudioPlayer;
 /// Application result type.
 pub type AppResult<T> = std::result::Result<T, Box<dyn error::Error>>;
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LoopMode {
+    NoLoop,
+    LoopSingle,
+    LoopAll,
+}
+
 /// Application.
 pub struct App {
     /// Is the application running?
@@ -17,6 +24,7 @@ pub struct App {
     pub track_artist: String,
     pub comment: String,
     pub track_channel_count: u32,
+    pub loop_mode: LoopMode,
 }
 
 impl Default for App {
@@ -31,6 +39,7 @@ impl Default for App {
             track_artist: String::new(),
             comment: String::new(),
             track_channel_count: 0,
+            loop_mode: LoopMode::NoLoop,
         }
     }
 }
@@ -52,6 +61,8 @@ impl App {
     pub fn increment_track(&mut self) {
         if self.current_track_index + 1 < self.track_list.len() {
             self.current_track_index += 1;
+        } else if self.loop_mode == LoopMode::LoopAll {
+            self.current_track_index = 0;
         }
         self.get_metadata();
         if self.is_playing {
@@ -63,12 +74,22 @@ impl App {
     pub fn decrement_track(&mut self) {
         if self.current_track_index > 0 {
             self.current_track_index -= 1;
+        } else if self.loop_mode == LoopMode::LoopAll {
+            self.current_track_index = self.track_list.len() - 1;
         }
         self.get_metadata();
         if self.is_playing {
             self.stop().unwrap();
             self.play();
         }
+    }
+
+    pub fn toggle_loop_mode(&mut self) {
+        self.loop_mode = match self.loop_mode {
+            LoopMode::NoLoop => LoopMode::LoopSingle,
+            LoopMode::LoopSingle => LoopMode::LoopAll,
+            LoopMode::LoopAll => LoopMode::NoLoop,
+        };
     }
 
     pub fn load_tracks(&mut self, folder_path: &str) -> AppResult<()> {
@@ -237,6 +258,33 @@ impl App {
         self.audio_player.stop()?;
         self.is_playing = false;
         Ok(())
+    }
+
+    pub fn check_playback_status(&mut self) {
+        if self.is_playing && !self.audio_player.is_running() {
+            // Track finished playing
+            self.is_playing = false;
+
+            match self.loop_mode {
+                LoopMode::NoLoop => {
+                    // Do nothing, just stop
+                }
+                LoopMode::LoopSingle => {
+                    // Replay the same track
+                    self.play();
+                }
+                LoopMode::LoopAll => {
+                    // Move to next track (or loop back to first)
+                    if self.current_track_index + 1 < self.track_list.len() {
+                        self.current_track_index += 1;
+                    } else {
+                        self.current_track_index = 0;
+                    }
+                    self.get_metadata();
+                    self.play();
+                }
+            }
+        }
     }
 
 }

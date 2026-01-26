@@ -25,6 +25,9 @@ fn main() -> AppResult<()> {
         // Render the user interface.
         tui.draw(&mut app)?;
         app.get_metadata();
+        // Check if track finished and handle looping
+        app.check_playback_status();
+
         // Handle events.
         match tui.events.next()? {
             Event::Tick => app.tick(),

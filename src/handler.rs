@@ -20,8 +20,11 @@ pub fn handle_key_events(key_event: KeyEvent, app: &mut App) -> AppResult<()> {
         KeyCode::Char('s') => {
             app.stop()?;
         }
+        KeyCode::Char('l') => {
+            app.toggle_loop_mode();
+        }
         KeyCode::Char('f') => {
-            
+
         }
         // Track handlers
         KeyCode::Right => {

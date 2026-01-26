@@ -1,4 +1,4 @@
-use crate::app::App;
+use crate::app::{App, LoopMode};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Style, Stylize},
@@ -43,10 +43,11 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     let status_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
+            Constraint::Percentage(20),
+            Constraint::Percentage(20),
+            Constraint::Percentage(20),
+            Constraint::Percentage(20),
+            Constraint::Percentage(20),
         ])
         .split(chunks[2]);
 
@@ -66,11 +67,18 @@ pub fn render(app: &mut App, frame: &mut Frame) {
 
 
     // Create the main content widgets for each column
+    let loop_text = match app.loop_mode {
+        LoopMode::NoLoop => "Off",
+        LoopMode::LoopSingle => "Single",
+        LoopMode::LoopAll => "All",
+    };
+
     let main_content_1 = Paragraph::new(format!(
-        "Index: {}/{}    Channels: {}",
+        "Index: {}/{}    Channels: {}    Loop: {}",
         app.current_track_index + 1,
         app.track_list.len(),
         app.track_channel_count,
+        loop_text,
     ))
     .block(
         Block::default()
@@ -125,6 +133,26 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         )
         .alignment(Alignment::Center);
 
+    let loop_mode_text = match app.loop_mode {
+        LoopMode::NoLoop => "[L] Loop: Off",
+        LoopMode::LoopSingle => "[L] Loop: 1",
+        LoopMode::LoopAll => "[L] Loop: All",
+    };
+
+    let status_content_5 = Paragraph::new(loop_mode_text)
+        .block(
+            Block::default()
+                .border_type(BorderType::Double)
+                .borders(Borders::ALL)
+                .padding(Padding::new(1, 1, 0, 0)),
+        )
+        .style(if app.loop_mode != LoopMode::NoLoop {
+            Style::default().fg(COLOR_AMBER[0])
+        } else {
+            Style::default()
+        })
+        .alignment(Alignment::Center);
+
     // Render each widget in its respective area
     frame.render_widget(title_bar, title_chunks[0]);
     frame.render_widget(main_content_1, main_content_chunks[0]);
@@ -132,4 +160,5 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     frame.render_widget(status_content_2, status_chunks[1]);
     frame.render_widget(status_content_3, status_chunks[2]);
     frame.render_widget(status_content_4, status_chunks[3]);
+    frame.render_widget(status_content_5, status_chunks[4]);
 }
