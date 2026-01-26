@@ -23,6 +23,9 @@ pub fn handle_key_events(key_event: KeyEvent, app: &mut App) -> AppResult<()> {
         KeyCode::Char('l') => {
             app.toggle_loop_mode();
         }
+        KeyCode::Char('a') => {
+            app.toggle_autoplay();
+        }
         KeyCode::Char('f') => {
 
         }

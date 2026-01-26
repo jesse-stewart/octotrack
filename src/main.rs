@@ -17,10 +17,15 @@ fn main() -> AppResult<()> {
     let mut tui = Tui::new(terminal, events);
     tui.init()?;
     app.load_tracks("tracks").unwrap();
-    
+
 
     // Get initial track metadata
     app.get_metadata();
+
+    // Auto-play if enabled in config
+    if app.autoplay && !app.track_list.is_empty() {
+        app.play();
+    }
 
     // Start the main loop.
     while app.running {

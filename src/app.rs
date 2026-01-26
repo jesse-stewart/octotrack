@@ -27,6 +27,7 @@ pub struct App {
     pub track_channel_count: u32,
     pub loop_mode: LoopMode,
     pub volume: u8, // Master volume 0-100
+    pub autoplay: bool, // Auto-play on startup
     pub current_position: Option<f32>, // Current playback position in seconds
     pub track_duration: Option<f32>, // Total track duration in seconds
     pub channel_levels: Vec<f32>, // Per-channel RMS levels in dB
@@ -46,6 +47,7 @@ impl Default for App {
             track_channel_count: 0,
             loop_mode: LoopMode::LoopSingle,
             volume: 100, // Start at 100%
+            autoplay: false, // Disabled by default
             current_position: None,
             track_duration: None,
             channel_levels: vec![],
@@ -101,6 +103,11 @@ impl App {
             LoopMode::LoopSingle => LoopMode::LoopAll,
             LoopMode::LoopAll => LoopMode::NoLoop,
         };
+    }
+
+    pub fn toggle_autoplay(&mut self) {
+        self.autoplay = !self.autoplay;
+        let _ = self.save_config();
     }
 
     pub fn increase_volume(&mut self) {
@@ -366,6 +373,9 @@ impl App {
             if let Some(volume) = config["volume"].as_u64() {
                 self.volume = volume as u8;
             }
+            if let Some(autoplay) = config["autoplay"].as_bool() {
+                self.autoplay = autoplay;
+            }
         }
 
         Ok(())
@@ -380,7 +390,8 @@ impl App {
         }
 
         let config = json!({
-            "volume": self.volume
+            "volume": self.volume,
+            "autoplay": self.autoplay
         });
 
         fs::write(config_path, serde_json::to_string_pretty(&config)?)?;

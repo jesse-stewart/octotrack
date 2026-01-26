@@ -141,14 +141,17 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         title
     };
 
+    let autoplay_text = if app.autoplay { "On" } else { "Off" };
+
     let info_content = Paragraph::new(format!(
-        "Artist:\n{}\n\nTrack:\n{}\n\nTrack #:{}/{}\n\n{} Channels\n\nLoop: {}",
+        "Artist:\n{}\n\nTrack:\n{}\n\nTrack #:{}/{}\n\n{} Channels\n\nLoop: {}\nAutoplay: {}",
         artist_display,
         title_display,
         app.current_track_index + 1,
         app.track_list.len(),
         app.track_channel_count,
         loop_text,
+        autoplay_text,
     ))
     .block(
         Block::default()
