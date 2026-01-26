@@ -250,9 +250,20 @@ impl App {
 
             let fallback_title = track_path.file_name().unwrap().to_string_lossy().to_string();
 
-            self.track_title = meta_info["format"]["tags"]["TITLE"].as_str().unwrap_or(&fallback_title).to_string();
-            self.track_artist = meta_info["format"]["tags"]["ARTIST"].as_str().unwrap_or("").to_string();
-            self.comment = meta_info["format"]["tags"]["comment"].as_str().unwrap_or("").to_string();
+            // Try both uppercase and lowercase tag names (different formats use different cases)
+            let title = meta_info["format"]["tags"]["TITLE"].as_str()
+                .or_else(|| meta_info["format"]["tags"]["title"].as_str())
+                .unwrap_or(&fallback_title);
+            let artist = meta_info["format"]["tags"]["ARTIST"].as_str()
+                .or_else(|| meta_info["format"]["tags"]["artist"].as_str())
+                .unwrap_or("");
+            let comment = meta_info["format"]["tags"]["comment"].as_str()
+                .or_else(|| meta_info["format"]["tags"]["COMMENT"].as_str())
+                .unwrap_or("");
+
+            self.track_title = title.to_string();
+            self.track_artist = artist.to_string();
+            self.comment = comment.to_string();
             self.track_duration = meta_info["format"]["duration"].as_str()
                 .and_then(|d| d.parse::<f32>().ok());
         } else {
@@ -270,11 +281,27 @@ impl App {
             let meta_info: std::borrow::Cow<str> = String::from_utf8_lossy(&meta_info);
             let meta_info: serde_json::Value = serde_json::from_str(&meta_info).unwrap();
 
-            let fallback_title = track_path.to_str().unwrap().to_string();
+            // Use filename without extension as fallback
+            let fallback_title = track_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("Unknown")
+                .to_string();
 
-            self.track_title = meta_info["format"]["tags"]["TITLE"].as_str().unwrap_or(&fallback_title).to_string();
-            self.track_artist = meta_info["format"]["tags"]["ARTIST"].as_str().unwrap_or("").to_string();
-            self.comment = meta_info["format"]["tags"]["comment"].as_str().unwrap_or("").to_string();
+            // Try both uppercase and lowercase tag names (different formats use different cases)
+            let title = meta_info["format"]["tags"]["TITLE"].as_str()
+                .or_else(|| meta_info["format"]["tags"]["title"].as_str())
+                .unwrap_or(&fallback_title);
+            let artist = meta_info["format"]["tags"]["ARTIST"].as_str()
+                .or_else(|| meta_info["format"]["tags"]["artist"].as_str())
+                .unwrap_or("");
+            let comment = meta_info["format"]["tags"]["comment"].as_str()
+                .or_else(|| meta_info["format"]["tags"]["COMMENT"].as_str())
+                .unwrap_or("");
+
+            self.track_title = title.to_string();
+            self.track_artist = artist.to_string();
+            self.comment = comment.to_string();
             self.track_channel_count = meta_info["streams"][0]["channels"].as_u64().unwrap_or(0) as u32;
             self.track_duration = meta_info["format"]["duration"].as_str()
                 .and_then(|d| d.parse::<f32>().ok());

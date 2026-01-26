@@ -47,7 +47,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         .constraints([
             Constraint::Min(1),     // Channel levels
             Constraint::Length(9), // Volume indicator
-            Constraint::Length(17), // Info sidebar
+            Constraint::Length(25), // Info sidebar (increased for artist/track)
         ])
         .split(chunks[2]);
 
@@ -123,9 +123,28 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         LoopMode::LoopAll => "All",
     };
 
+    // Prepare artist and title display
+    let artist_display = if app.track_artist.is_empty() {
+        "Unknown".to_string()
+    } else {
+        app.track_artist.clone()
+    };
+
+    let title_display = if app.track_title.is_empty() {
+        "No Track".to_string()
+    } else {
+        // Remove "tracks/" prefix if present
+        let mut title = app.track_title.clone();
+        if title.starts_with("tracks/") {
+            title = title.strip_prefix("tracks/").unwrap_or(&title).to_string();
+        }
+        title
+    };
+
     let info_content = Paragraph::new(format!(
-        "Time:\n{}\n\nTrack:\n{}/{}\n\nChannels:\n{}\n\nLoop:\n{}",
-        time_text,
+        "Artist:\n{}\n\nTrack:\n{}\n\nTrack #:{}/{}\n\n{} Channels\n\nLoop: {}",
+        artist_display,
+        title_display,
         app.current_track_index + 1,
         app.track_list.len(),
         app.track_channel_count,
