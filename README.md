@@ -23,7 +23,7 @@ A terminal-based multi-channel audio player built with Rust and Ratatui. Designe
 Install required system dependencies:
 
 ```bash
-sudo apt-get install mpv libmpv-dev ffmpeg
+sudo apt-get install mplayer ffmpeg
 ```
 
 ### Building
@@ -50,7 +50,10 @@ Or run the compiled binary directly:
 ./target/release/octotrack
 ```
 
-The app expects audio files to be in a `tracks/` directory in the same location where you run the command.
+The app looks for a `tracks/` directory in the following order:
+
+1. **USB storage** - scans `/media/` and `/mnt/` for any mounted drive containing a `tracks/` folder
+2. **Local directory** - falls back to a `tracks/` folder in the current working directory
 
 ### Keyboard Controls
 
@@ -138,11 +141,73 @@ ffmpeg -i input.wav -metadata artist="Artist Name" -metadata title="Track Title"
 
 Octotrack stores its configuration in `~/.config/octotrack/config.json`.
 
-Settings that are saved:
-- Volume level
-- Autoplay preference
+Example config:
 
-The configuration file is automatically created and updated when you change settings in the app.
+```json
+{
+  "volume": 80,
+  "max_volume": 100,
+  "autoplay": true
+}
+```
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `volume` | `100` | Current volume level (0-100), as a percentage of `max_volume` |
+| `max_volume` | `100` | Maximum volume ceiling passed to mplayer's `softvol-max`. Lower this if audio is too loud even at low volume levels. For example, set to `50` to halve the maximum output level. |
+| `autoplay` | `false` | Automatically start playback when the app launches |
+
+Volume and autoplay are updated automatically when changed via keyboard controls. `max_volume` must be edited in the config file directly.
+
+## USB Storage
+
+Octotrack automatically detects tracks on USB drives. Place your audio files in a `tracks/` folder at the root of any USB drive:
+
+```
+USB Drive (e.g. /media/pi/MYUSB)
+└── tracks/
+    ├── song_1.wav
+    ├── song_2.flac
+    └── multi_track_folder/
+        ├── kick.wav
+        ├── snare.wav
+        └── bass.wav
+```
+
+Single audio files are played directly. Subdirectories are treated as multi-file tracks - each file in the folder is merged into a single multi-channel stream for playback (e.g. 3 mono files become a 3-channel track).
+
+When a USB drive with a `tracks/` directory is mounted, Octotrack will use it automatically. If no USB drive is found, it falls back to a local `tracks/` directory.
+
+### Auto-mounting USB drives on Raspberry Pi
+
+By default, USB drives don't auto-mount on a headless Raspberry Pi. Use `usbmount` to mount USB drives automatically:
+
+```bash
+sudo apt-get install usbmount
+```
+
+Then edit the usbmount config to support common filesystems:
+
+```bash
+sudo nano /etc/usbmount/usbmount.conf
+```
+
+Set the following:
+
+```
+FILESYSTEMS="vfat ext2 ext3 ext4 hfsplus ntfs exfat"
+MOUNTOPTIONS="sync,noexec,nodev,noatime,nodiratime"
+```
+
+For `exfat` and `ntfs` support, install the additional packages:
+
+```bash
+sudo apt-get install exfat-fuse ntfs-3g
+```
+
+USB drives will now auto-mount under `/media/usb0`, `/media/usb1`, etc. Octotrack scans these paths on startup.
+
+**Note:** If you are using a desktop environment (e.g. Raspberry Pi OS with desktop), USB drives typically auto-mount under `/media/<username>/` already and no extra setup is needed.
 
 ## Running on Boot (Linux/Raspberry Pi)
 
@@ -247,7 +312,7 @@ The app follows a clean separation of concerns:
 ## Troubleshooting
 
 ### Audio not playing
-- Ensure `mpv` and `libmpv-dev` are installed
+- Ensure `mplayer` and `ffmpeg` are installed
 - Check that audio files are in the `tracks/` directory
 - Verify file formats are supported (WAV, FLAC, or MP3)
 - Check system audio output is working
