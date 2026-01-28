@@ -32,7 +32,7 @@ impl AudioPlayer {
         }
     }
 
-    pub fn play(&mut self, track_path: &PathBuf, channel_count: u32, volume: u8) -> io::Result<()> {
+    pub fn play(&mut self, track_path: &PathBuf, channel_count: u32, volume: u8, max_volume: u8) -> io::Result<()> {
         // Ensure any existing process is stopped before starting a new one
         if let Some(mut process) = self.process.take() {
             process.kill()?;
@@ -66,9 +66,9 @@ impl AudioPlayer {
 
         // Check if track_path is a directory with multiple audio files
         if track_path.is_dir() {
-            self.play_multi_file(track_path, channel_count, volume)
+            self.play_multi_file(track_path, channel_count, volume, max_volume)
         } else {
-            self.play_single_file(track_path, channel_count, volume)
+            self.play_single_file(track_path, channel_count, volume, max_volume)
         }
     }
 
@@ -222,7 +222,7 @@ impl AudioPlayer {
         Ok(())
     }
 
-    fn play_single_file(&mut self, file_path: &PathBuf, channel_count: u32, volume: u8) -> io::Result<()> {
+    fn play_single_file(&mut self, file_path: &PathBuf, channel_count: u32, volume: u8, max_volume: u8) -> io::Result<()> {
         // Use mplayer's built-in volume control with slave mode for dynamic control
         let process = Command::new("mplayer")
             .arg("-slave")
@@ -233,7 +233,7 @@ impl AudioPlayer {
             .arg(channel_count.to_string())
             .arg("-softvol")
             .arg("-softvol-max")
-            .arg("200")
+            .arg(max_volume.to_string())
             .arg("-volume")
             .arg(volume.to_string())
             .arg("-ao")
@@ -257,7 +257,7 @@ impl AudioPlayer {
         Ok(())
     }
 
-    fn play_multi_file(&mut self, folder_path: &PathBuf, channel_count: u32, volume: u8) -> io::Result<()> {
+    fn play_multi_file(&mut self, folder_path: &PathBuf, channel_count: u32, volume: u8, max_volume: u8) -> io::Result<()> {
         // Get all audio files in the directory, sorted
         let mut audio_files: Vec<PathBuf> = std::fs::read_dir(folder_path)?
             .filter_map(|e| e.ok())
@@ -278,7 +278,7 @@ impl AudioPlayer {
 
         // If only one file, play it directly
         if audio_files.len() == 1 {
-            return self.play_single_file(&audio_files[0], channel_count, volume);
+            return self.play_single_file(&audio_files[0], channel_count, volume, max_volume);
         }
 
         // Build ffmpeg command to merge multiple audio files
@@ -324,7 +324,7 @@ impl AudioPlayer {
             .arg(channel_count.to_string())
             .arg("-softvol")
             .arg("-softvol-max")
-            .arg("200")
+            .arg(max_volume.to_string())
             .arg("-volume")
             .arg(volume.to_string())
             .arg("-ao")

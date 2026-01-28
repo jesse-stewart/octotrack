@@ -27,6 +27,7 @@ pub struct App {
     pub track_channel_count: u32,
     pub loop_mode: LoopMode,
     pub volume: u8, // Master volume 0-100
+    pub max_volume: u8, // Maximum volume level (softvol-max for mplayer)
     pub autoplay: bool, // Auto-play on startup
     pub current_position: Option<f32>, // Current playback position in seconds
     pub track_duration: Option<f32>, // Total track duration in seconds
@@ -48,6 +49,7 @@ impl Default for App {
             track_channel_count: 0,
             loop_mode: LoopMode::LoopSingle,
             volume: 100, // Start at 100%
+            max_volume: 100, // 100% of original audio level
             autoplay: false, // Disabled by default
             current_position: None,
             track_duration: None,
@@ -190,7 +192,7 @@ impl App {
     pub fn play(&mut self) {
         if let Some(current_track) = self.track_list.get(self.current_track_index) {
             if !self.is_playing {
-                self.audio_player.play(current_track, self.track_channel_count, self.volume).unwrap();
+                self.audio_player.play(current_track, self.track_channel_count, self.volume, self.max_volume).unwrap();
                 self.is_playing = true;
             }
         }
@@ -375,6 +377,9 @@ impl App {
             if let Some(volume) = config["volume"].as_u64() {
                 self.volume = volume as u8;
             }
+            if let Some(max_volume) = config["max_volume"].as_u64() {
+                self.max_volume = max_volume as u8;
+            }
             if let Some(autoplay) = config["autoplay"].as_bool() {
                 self.autoplay = autoplay;
             }
@@ -393,6 +398,7 @@ impl App {
 
         let config = json!({
             "volume": self.volume,
+            "max_volume": self.max_volume,
             "autoplay": self.autoplay
         });
 

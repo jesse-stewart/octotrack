@@ -298,7 +298,7 @@ impl Widget for BigText {
             return;
         }
 
-        let height = 5; // Each character is 5 lines tall
+        let _height = 5; // Each character is 5 lines tall
         let char_width = 6; // Width per character including spacing
 
         // Calculate starting position to center the text

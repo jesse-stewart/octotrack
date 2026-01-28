@@ -93,7 +93,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     );
 
     // Create the progress gauge
-    let (progress_ratio, time_text) = if let (Some(pos), Some(dur)) = (app.current_position, app.track_duration) {
+    let (progress_ratio, _time_text) = if let (Some(pos), Some(dur)) = (app.current_position, app.track_duration) {
         let ratio = if dur > 0.0 { (pos / dur).min(1.0) as f64 } else { 0.0 };
         let current_min = (pos / 60.0) as u32;
         let current_sec = (pos % 60.0) as u32;
