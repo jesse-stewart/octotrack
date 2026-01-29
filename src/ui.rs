@@ -320,6 +320,11 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     if app.show_quit_dialog {
         render_quit_dialog(frame);
     }
+
+    // Render EQ dialog if showing
+    if app.show_eq {
+        render_eq_dialog(frame, app);
+    }
 }
 
 /// Renders a centered quit confirmation dialog
@@ -347,6 +352,94 @@ fn render_quit_dialog(frame: &mut Frame) {
     .block(dialog_block);
 
     frame.render_widget(dialog_text, area);
+}
+
+/// Renders the EQ dialog overlay
+fn render_eq_dialog(frame: &mut Frame, app: &App) {
+    let area = centered_rect(80, 60, frame.size());
+
+    // Clear the area behind the dialog
+    frame.render_widget(Clear, area);
+
+    // EQ band labels
+    const BAND_LABELS: [&str; 10] = ["31", "62", "125", "250", "500", "1k", "2k", "4k", "8k", "16k"];
+
+    let title = if app.eq_enabled {
+        "Equalizer [ON]"
+    } else {
+        "Equalizer [BYPASS]"
+    };
+
+    let dialog_block = Block::default()
+        .title(title)
+        .title_alignment(Alignment::Center)
+        .borders(Borders::ALL)
+        .border_type(BorderType::Double)
+        .border_style(Style::default().fg(if app.eq_enabled { COLOR_AMBER[0] } else { COLOR_AMBER[4] }))
+        .style(Style::default().bg(Color::Black));
+
+    frame.render_widget(dialog_block.clone(), area);
+
+    let inner = dialog_block.inner(area);
+
+    // Split inner area: bars, selector indicator, help text
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(3),     // EQ bars
+            Constraint::Length(1), // Selection indicator
+            Constraint::Length(2), // Help text
+        ])
+        .split(inner);
+
+    // Create bars for each EQ band
+    let bars: Vec<Bar> = app.eq_bands.iter().enumerate()
+        .map(|(i, &gain)| {
+            // Convert -12..+12 dB to 0..24 display value
+            let display_value = (gain as i16 + 12) as u64;
+
+            let color = COLOR_AMBER[3];
+            let label = format!("{}\n{:+}dB", BAND_LABELS[i], gain);
+
+            Bar::default()
+                .value(display_value)
+                .label(label.into())
+                .style(Style::default().fg(color))
+                .value_style(Style::default().fg(color))
+        })
+        .collect();
+
+    let bar_chart = BarChart::default()
+        .data(BarGroup::default().bars(&bars))
+        .bar_width(5)
+        .bar_gap(1)
+        .max(24);  // -12 to +12 maps to 0-24
+
+    frame.render_widget(bar_chart, layout[0]);
+
+    // Selection indicator row - position ^^^ under the selected band
+    // bar_width=5, bar_gap=1, so each band takes 6 chars. Center ^^^ in the 5-char bar.
+    let mut selector = String::new();
+    for i in 0..10 {
+        if i == app.eq_selected_band {
+            selector.push_str(" ^^^ ");
+        } else {
+            selector.push_str("     ");
+        }
+        if i < 9 {
+            selector.push(' '); // gap between bars
+        }
+    }
+    let selector_text = Paragraph::new(selector)
+        .style(Style::default().fg(COLOR_AMBER[0]));
+    frame.render_widget(selector_text, layout[1]);
+
+    // Help text
+    let help_text = Paragraph::new("[←→] Select   [↑↓] Adjust   [B] Bypass   [E/Esc] Close")
+        .alignment(Alignment::Center)
+        .style(Style::default().fg(COLOR_AMBER[2]));
+
+    frame.render_widget(help_text, layout[2]);
 }
 
 /// Helper function to create a centered rectangle

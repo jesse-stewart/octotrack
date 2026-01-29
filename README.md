@@ -11,6 +11,7 @@ A terminal-based multi-channel audio player built with Rust and Ratatui. Designe
 - Support for single audio files or multi-file tracks (folders with multiple mono/stereo files)
 - Loop modes: Off, Single, All
 - Volume control with persistent settings
+- 10-band graphic equalizer with bypass
 - Autoplay mode for automatic playback on startup
 - Track navigation (previous/next)
 - Progress indicator with time display
@@ -67,12 +68,28 @@ The app looks for a `tracks/` directory in the following order:
 | `↓` | Decrease volume |
 | `L` | Toggle loop mode (Off → Single → All) |
 | `A` | Toggle autoplay on startup |
+| `E` | Open equalizer |
 | `Q` or `ESC` | Quit (with confirmation dialog) |
 | `Ctrl-C` | Quit (with confirmation dialog) |
 
 When the quit confirmation dialog appears:
 - Press `Y` to confirm and quit
 - Press `N` or `ESC` to cancel and return to the app
+
+### Equalizer Controls
+
+Press `E` to open the 10-band graphic equalizer overlay:
+
+| Key | Action |
+|-----|--------|
+| `←` | Select previous band |
+| `→` | Select next band |
+| `↑` | Increase selected band (+1 dB) |
+| `↓` | Decrease selected band (-1 dB) |
+| `B` | Toggle EQ bypass (on/off) |
+| `E` or `ESC` | Close equalizer |
+
+EQ bands: 31Hz, 62Hz, 125Hz, 250Hz, 500Hz, 1kHz, 2kHz, 4kHz, 8kHz, 16kHz — each adjustable from -12 to +12 dB.
 
 ### Supported Audio Formats
 
@@ -147,7 +164,9 @@ Example config:
 {
   "volume": 80,
   "max_volume": 100,
-  "autoplay": true
+  "autoplay": true,
+  "eq_bands": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  "eq_enabled": true
 }
 ```
 
@@ -156,8 +175,10 @@ Example config:
 | `volume` | `100` | Current volume level (0-100), as a percentage of `max_volume` |
 | `max_volume` | `100` | Maximum volume ceiling passed to mplayer's `softvol-max`. Lower this if audio is too loud even at low volume levels. For example, set to `50` to halve the maximum output level. |
 | `autoplay` | `false` | Automatically start playback when the app launches |
+| `eq_bands` | `[0,0,0,0,0,0,0,0,0,0]` | 10-band EQ gain values (-12 to +12 dB) for bands: 31Hz, 62Hz, 125Hz, 250Hz, 500Hz, 1kHz, 2kHz, 4kHz, 8kHz, 16kHz |
+| `eq_enabled` | `true` | Whether the EQ is active (false = bypassed) |
 
-Volume and autoplay are updated automatically when changed via keyboard controls. `max_volume` must be edited in the config file directly.
+Volume, autoplay, and EQ settings are updated automatically when changed via keyboard controls. `max_volume` must be edited in the config file directly.
 
 ## USB Storage
 

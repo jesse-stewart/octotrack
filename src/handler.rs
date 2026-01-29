@@ -17,6 +17,32 @@ pub fn handle_key_events(key_event: KeyEvent, app: &mut App) -> AppResult<()> {
         return Ok(());
     }
 
+    // If EQ overlay is showing, handle EQ input
+    if app.show_eq {
+        match key_event.code {
+            KeyCode::Char('e') | KeyCode::Char('E') | KeyCode::Esc => {
+                app.toggle_eq_view();
+            }
+            KeyCode::Char('b') | KeyCode::Char('B') => {
+                app.toggle_eq_enabled();
+            }
+            KeyCode::Left => {
+                app.eq_select_prev();
+            }
+            KeyCode::Right => {
+                app.eq_select_next();
+            }
+            KeyCode::Up => {
+                app.eq_increase_band();
+            }
+            KeyCode::Down => {
+                app.eq_decrease_band();
+            }
+            _ => {}
+        }
+        return Ok(());
+    }
+
     // Normal key handling
     match key_event.code {
         // Show quit confirmation dialog on `ESC` or `q`
@@ -41,8 +67,8 @@ pub fn handle_key_events(key_event: KeyEvent, app: &mut App) -> AppResult<()> {
         KeyCode::Char('a') => {
             app.toggle_autoplay();
         }
-        KeyCode::Char('f') => {
-
+        KeyCode::Char('e') => {
+            app.toggle_eq_view();
         }
         // Volume control
         KeyCode::Up => {

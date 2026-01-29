@@ -33,6 +33,10 @@ pub struct App {
     pub track_duration: Option<f32>, // Total track duration in seconds
     pub channel_levels: Vec<f32>, // Per-channel RMS levels in dB
     pub show_quit_dialog: bool, // Show quit confirmation dialog
+    pub eq_bands: [i8; 10], // 10-band EQ gain values (-12 to +12 dB)
+    pub eq_enabled: bool, // EQ bypass toggle
+    pub show_eq: bool, // Show EQ overlay
+    pub eq_selected_band: usize, // Currently selected EQ band (0-9)
 }
 
 impl Default for App {
@@ -55,6 +59,10 @@ impl Default for App {
             track_duration: None,
             channel_levels: vec![],
             show_quit_dialog: false, // Dialog hidden by default
+            eq_bands: [0; 10], // Flat EQ by default
+            eq_enabled: true,
+            show_eq: false,
+            eq_selected_band: 0,
         }
     }
 }
@@ -126,6 +134,44 @@ impl App {
         let _ = self.save_config();
     }
 
+    pub fn toggle_eq_view(&mut self) {
+        self.show_eq = !self.show_eq;
+    }
+
+    pub fn toggle_eq_enabled(&mut self) {
+        self.eq_enabled = !self.eq_enabled;
+        if self.is_playing {
+            let _ = self.audio_player.set_eq_enabled(&self.eq_bands, self.eq_enabled);
+        }
+        let _ = self.save_config();
+    }
+
+    pub fn eq_select_next(&mut self) {
+        self.eq_selected_band = (self.eq_selected_band + 1).min(9);
+    }
+
+    pub fn eq_select_prev(&mut self) {
+        self.eq_selected_band = self.eq_selected_band.saturating_sub(1);
+    }
+
+    pub fn eq_increase_band(&mut self) {
+        let band = self.eq_selected_band;
+        self.eq_bands[band] = (self.eq_bands[band] + 1).min(12);
+        if self.is_playing && self.eq_enabled {
+            let _ = self.audio_player.update_eq_bands(&self.eq_bands);
+        }
+        let _ = self.save_config();
+    }
+
+    pub fn eq_decrease_band(&mut self) {
+        let band = self.eq_selected_band;
+        self.eq_bands[band] = (self.eq_bands[band] - 1).max(-12);
+        if self.is_playing && self.eq_enabled {
+            let _ = self.audio_player.update_eq_bands(&self.eq_bands);
+        }
+        let _ = self.save_config();
+    }
+
     pub fn load_tracks(&mut self, folder_path: &str) -> AppResult<()> {
         let mut tracks = vec![];
 
@@ -192,7 +238,7 @@ impl App {
     pub fn play(&mut self) {
         if let Some(current_track) = self.track_list.get(self.current_track_index) {
             if !self.is_playing {
-                self.audio_player.play(current_track, self.track_channel_count, self.volume, self.max_volume).unwrap();
+                self.audio_player.play(current_track, self.track_channel_count, self.volume, self.max_volume, &self.eq_bands, self.eq_enabled).unwrap();
                 self.is_playing = true;
             }
         }
@@ -383,6 +429,18 @@ impl App {
             if let Some(autoplay) = config["autoplay"].as_bool() {
                 self.autoplay = autoplay;
             }
+            if let Some(eq_bands) = config["eq_bands"].as_array() {
+                for (i, val) in eq_bands.iter().enumerate() {
+                    if i < 10 {
+                        if let Some(v) = val.as_i64() {
+                            self.eq_bands[i] = (v as i8).max(-12).min(12);
+                        }
+                    }
+                }
+            }
+            if let Some(eq_enabled) = config["eq_enabled"].as_bool() {
+                self.eq_enabled = eq_enabled;
+            }
         }
 
         Ok(())
@@ -396,10 +454,13 @@ impl App {
             fs::create_dir_all(parent)?;
         }
 
+        let eq_bands_vec: Vec<i8> = self.eq_bands.to_vec();
         let config = json!({
             "volume": self.volume,
             "max_volume": self.max_volume,
-            "autoplay": self.autoplay
+            "autoplay": self.autoplay,
+            "eq_bands": eq_bands_vec,
+            "eq_enabled": self.eq_enabled
         });
 
         fs::write(config_path, serde_json::to_string_pretty(&config)?)?;

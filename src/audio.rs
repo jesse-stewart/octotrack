@@ -32,7 +32,7 @@ impl AudioPlayer {
         }
     }
 
-    pub fn play(&mut self, track_path: &PathBuf, channel_count: u32, volume: u8, max_volume: u8) -> io::Result<()> {
+    pub fn play(&mut self, track_path: &PathBuf, channel_count: u32, volume: u8, max_volume: u8, eq_bands: &[i8; 10], eq_enabled: bool) -> io::Result<()> {
         // Ensure any existing process is stopped before starting a new one
         if let Some(mut process) = self.process.take() {
             process.kill()?;
@@ -66,9 +66,9 @@ impl AudioPlayer {
 
         // Check if track_path is a directory with multiple audio files
         if track_path.is_dir() {
-            self.play_multi_file(track_path, channel_count, volume, max_volume)
+            self.play_multi_file(track_path, channel_count, volume, max_volume, eq_bands, eq_enabled)
         } else {
-            self.play_single_file(track_path, channel_count, volume, max_volume)
+            self.play_single_file(track_path, channel_count, volume, max_volume, eq_bands, eq_enabled)
         }
     }
 
@@ -222,10 +222,10 @@ impl AudioPlayer {
         Ok(())
     }
 
-    fn play_single_file(&mut self, file_path: &PathBuf, channel_count: u32, volume: u8, max_volume: u8) -> io::Result<()> {
+    fn play_single_file(&mut self, file_path: &PathBuf, channel_count: u32, volume: u8, max_volume: u8, eq_bands: &[i8; 10], eq_enabled: bool) -> io::Result<()> {
         // Use mplayer's built-in volume control with slave mode for dynamic control
-        let process = Command::new("mplayer")
-            .arg("-slave")
+        let mut cmd = Command::new("mplayer");
+        cmd.arg("-slave")
             .arg("-quiet")
             .arg("-input")
             .arg(format!("file={}", self.fifo_path.display()))
@@ -235,7 +235,15 @@ impl AudioPlayer {
             .arg("-softvol-max")
             .arg(max_volume.to_string())
             .arg("-volume")
-            .arg(volume.to_string())
+            .arg(volume.to_string());
+
+        // Add EQ filter if enabled
+        if eq_enabled {
+            cmd.arg("-af")
+               .arg(Self::eq_filter_string(eq_bands));
+        }
+
+        let process = cmd
             .arg("-ao")
             .arg("alsa:device=hw=0.0")
             .arg(file_path)
@@ -257,7 +265,7 @@ impl AudioPlayer {
         Ok(())
     }
 
-    fn play_multi_file(&mut self, folder_path: &PathBuf, channel_count: u32, volume: u8, max_volume: u8) -> io::Result<()> {
+    fn play_multi_file(&mut self, folder_path: &PathBuf, channel_count: u32, volume: u8, max_volume: u8, eq_bands: &[i8; 10], eq_enabled: bool) -> io::Result<()> {
         // Get all audio files in the directory, sorted
         let mut audio_files: Vec<PathBuf> = std::fs::read_dir(folder_path)?
             .filter_map(|e| e.ok())
@@ -278,7 +286,7 @@ impl AudioPlayer {
 
         // If only one file, play it directly
         if audio_files.len() == 1 {
-            return self.play_single_file(&audio_files[0], channel_count, volume, max_volume);
+            return self.play_single_file(&audio_files[0], channel_count, volume, max_volume, eq_bands, eq_enabled);
         }
 
         // Build ffmpeg command to merge multiple audio files
@@ -315,7 +323,8 @@ impl AudioPlayer {
         let mplayer_stdin = ffmpeg_output.stdout.take()
             .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Failed to capture ffmpeg stdout"))?;
 
-        let mplayer_process = Command::new("mplayer")
+        let mut mplayer_cmd = Command::new("mplayer");
+        mplayer_cmd
             .arg("-slave")
             .arg("-quiet")
             .arg("-input")
@@ -326,7 +335,14 @@ impl AudioPlayer {
             .arg("-softvol-max")
             .arg(max_volume.to_string())
             .arg("-volume")
-            .arg(volume.to_string())
+            .arg(volume.to_string());
+
+        if eq_enabled {
+            mplayer_cmd.arg("-af")
+                       .arg(Self::eq_filter_string(eq_bands));
+        }
+
+        let mplayer_process = mplayer_cmd
             .arg("-ao")
             .arg("alsa:device=hw=0.0")
             .arg("-")
@@ -346,6 +362,35 @@ impl AudioPlayer {
             .write(true)
             .open(&self.fifo_path)?);
 
+        Ok(())
+    }
+
+    fn eq_filter_string(bands: &[i8; 10]) -> String {
+        let values: Vec<String> = bands.iter().map(|b| b.to_string()).collect();
+        format!("equalizer={}", values.join(":"))
+    }
+
+    /// Update EQ band values smoothly during playback
+    pub fn update_eq_bands(&mut self, bands: &[i8; 10]) -> io::Result<()> {
+        if let Some(fifo) = &mut self.control_fifo {
+            let values: Vec<String> = bands.iter().map(|b| b.to_string()).collect();
+            writeln!(fifo, "pausing_keep_force af_cmdline equalizer {}", values.join(":"))?;
+            fifo.flush()?;
+        }
+        Ok(())
+    }
+
+    /// Toggle EQ on/off (for bypass - requires delete+add)
+    pub fn set_eq_enabled(&mut self, bands: &[i8; 10], enabled: bool) -> io::Result<()> {
+        if let Some(fifo) = &mut self.control_fifo {
+            writeln!(fifo, "pausing_keep_force af_del equalizer")?;
+            fifo.flush()?;
+
+            if enabled {
+                writeln!(fifo, "pausing_keep_force af_add {}", Self::eq_filter_string(bands))?;
+                fifo.flush()?;
+            }
+        }
         Ok(())
     }
 
