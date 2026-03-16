@@ -402,12 +402,8 @@ impl App {
     }
 
     pub fn start_recording(&mut self) -> AppResult<()> {
-        // Stop playback and monitoring so they don't conflict
         if self.is_playing {
             self.stop()?;
-        }
-        if self.is_monitoring {
-            self.stop_monitoring()?;
         }
 
         let ts = std::time::SystemTime::now()
@@ -420,6 +416,11 @@ impl App {
         let input_device = self.rec_input_device.clone();
         let channel_count = self.rec_channel_count;
         self.audio_player.start_recording(&output_path, &input_device, channel_count)?;
+        // If monitoring was active, re-enable it on the new capture session.
+        if self.is_monitoring {
+            let output_device = self.mon_output_device.clone();
+            let _ = self.audio_player.start_monitoring(&input_device, &output_device, channel_count);
+        }
         self.is_recording = true;
         self.recording_start_time = Some(Instant::now());
         let display_name = filename.strip_suffix(".wav").unwrap_or(&filename).to_string();
@@ -432,6 +433,13 @@ impl App {
         self.audio_player.stop_recording()?;
         self.is_recording = false;
         self.recording_start_time = None;
+        // If monitoring was active, restart it (stop_recording tears down the shared capture).
+        if self.is_monitoring {
+            let input_device = self.rec_input_device.clone();
+            let output_device = self.mon_output_device.clone();
+            let channel_count = self.rec_channel_count;
+            let _ = self.audio_player.start_monitoring(&input_device, &output_device, channel_count);
+        }
 
         let saved_path = self.recording_path.take();
 
@@ -520,9 +528,6 @@ impl App {
     pub fn start_monitoring(&mut self) -> AppResult<()> {
         if self.is_playing {
             self.stop()?;
-        }
-        if self.is_recording {
-            self.stop_recording()?;
         }
         let input_device = self.rec_input_device.clone();
         let output_device = self.mon_output_device.clone();
