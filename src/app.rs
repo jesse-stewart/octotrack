@@ -422,6 +422,8 @@ impl App {
         self.audio_player.start_recording(&output_path, &input_device, channel_count)?;
         self.is_recording = true;
         self.recording_start_time = Some(Instant::now());
+        let display_name = filename.strip_suffix(".wav").unwrap_or(&filename).to_string();
+        self.track_title = format!("{}/{}", self.tracks_dir, display_name);
         self.recording_path = Some(output_path);
         Ok(())
     }
