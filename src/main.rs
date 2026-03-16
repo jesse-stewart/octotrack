@@ -31,7 +31,6 @@ fn find_tracks_directory() -> String {
                 if tracks_path.exists() && tracks_path.is_dir() {
                     // Check if the tracks directory has audio files
                     if has_audio_files(&tracks_path) {
-                        println!("Found tracks on USB storage: {}", tracks_path.display());
                         return tracks_path.to_string_lossy().to_string();
                     }
                 }
@@ -40,7 +39,6 @@ fn find_tracks_directory() -> String {
     }
 
     // Fall back to local tracks directory
-    println!("Using local tracks directory");
     "tracks".to_string()
 }
 

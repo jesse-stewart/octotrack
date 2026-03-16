@@ -2,7 +2,7 @@ use crate::app::{App, LoopMode};
 use crate::bigtext::BigText;
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Style, Stylize},
+    style::{Color, Modifier, Style, Stylize},
     widgets::{Block, BorderType, Borders, Padding, Paragraph, Gauge, Bar, BarChart, BarGroup, Clear},
     Frame,
 };
@@ -54,12 +54,13 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     let status_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Ratio(1, 6),
-            Constraint::Ratio(1, 6),
-            Constraint::Ratio(1, 6),
-            Constraint::Ratio(1, 6),
-            Constraint::Ratio(1, 6),
-            Constraint::Ratio(1, 6),
+            Constraint::Ratio(1, 7),
+            Constraint::Ratio(1, 7),
+            Constraint::Ratio(1, 7),
+            Constraint::Ratio(1, 7),
+            Constraint::Ratio(1, 7),
+            Constraint::Ratio(1, 7),
+            Constraint::Ratio(1, 7),
         ])
         .split(chunks[3]);
 
@@ -149,6 +150,8 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         let min = (elapsed / 60.0) as u32;
         let sec = (elapsed % 60.0) as u32;
         format!("\u{25cf} REC {:02}:{:02}", min, sec)
+    } else if app.is_monitoring {
+        format!("\u{25cf} MON {} ({}ch)", app.rec_input_device, app.rec_channel_count)
     } else {
         format!("In: {} ({}ch)", app.rec_input_device, app.rec_channel_count)
     };
@@ -171,7 +174,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     );
 
     // Create channel meters using BarChart
-    let channel_count = if app.is_recording {
+    let channel_count = if app.is_recording || app.is_monitoring {
         app.channel_levels.len().min(app.rec_channel_count as usize)
     } else {
         app.channel_levels.len().min(app.track_channel_count as usize)
@@ -221,16 +224,55 @@ pub fn render(app: &mut App, frame: &mut Frame) {
 
         frame.render_widget(bar_chart, meter_chunks[0]);
     } else {
-        // Show placeholder when not playing
-        let placeholder = Paragraph::new(if !app.is_playing && !app.is_recording {
-            "Press [Space] to play  [R] to record"
+        // Show placeholder when not playing or recording
+        let placeholder_text = if app.is_monitoring {
+            "Monitoring..."
+        } else if !app.is_playing && !app.is_recording {
+            "Press [Space] to play  [R] to record  [M] to monitor"
         } else {
             "Initializing meters..."
-        })
-        .block(bar_chart_block)
-        .alignment(Alignment::Center);
+        };
+        let placeholder = Paragraph::new(placeholder_text)
+            .block(bar_chart_block)
+            .alignment(Alignment::Center);
 
         frame.render_widget(placeholder, meter_chunks[0]);
+
+        // Semi-transparent monitoring VU meters rendered on top of placeholder
+        if channel_count > 0 && app.is_monitoring {
+            let mon_bars: Vec<Bar> = app.channel_levels.iter().enumerate().take(channel_count)
+                .map(|(i, &level)| {
+                    let level_clamped = level.max(-60.0).min(0.0);
+                    let display_value = (level_clamped + 60.0) as u64;
+                    let label = format!("Ch{} {:.0}dB", i + 1, level);
+                    let dim_cyan = Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::DIM);
+                    Bar::default()
+                        .value(display_value)
+                        .label(label.into())
+                        .style(dim_cyan)
+                        .value_style(dim_cyan)
+                })
+                .collect();
+
+            let mon_block = Block::default()
+                .title("Monitor")
+                .title_alignment(Alignment::Left)
+                .border_type(BorderType::Rounded)
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM))
+                .padding(Padding::new(1, 1, 0, 0));
+
+            let mon_chart = BarChart::default()
+                .block(mon_block)
+                .data(BarGroup::default().bars(&mon_bars))
+                .bar_width(3)
+                .bar_gap(1)
+                .max(60);
+
+            frame.render_widget(mon_chart, meter_chunks[0]);
+        }
     }
 
     // Create volume indicator (vertical bar)
@@ -340,6 +382,26 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         })
         .alignment(Alignment::Center);
 
+    let mon_label = if app.is_monitoring {
+        "[M] \u{25cf} Mon"
+    } else {
+        "[M] Monitor"
+    };
+
+    let status_content_7 = Paragraph::new(mon_label)
+        .block(
+            Block::default()
+                .border_type(BorderType::Double)
+                .borders(Borders::ALL)
+                .padding(Padding::new(1, 1, 0, 0)),
+        )
+        .style(if app.is_monitoring {
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM)
+        } else {
+            Style::default()
+        })
+        .alignment(Alignment::Center);
+
     // Render each widget in its respective area
     frame.render_widget(title_block.clone(), title_chunks[0]);
     let title_inner = title_block.inner(title_chunks[0]);
@@ -354,6 +416,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     frame.render_widget(status_content_4, status_chunks[3]);
     frame.render_widget(status_content_5, status_chunks[4]);
     frame.render_widget(status_content_6, status_chunks[5]);
+    frame.render_widget(status_content_7, status_chunks[6]);
 
     // Render quit confirmation dialog if showing
     if app.show_quit_dialog {

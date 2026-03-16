@@ -41,8 +41,10 @@ pub struct App {
     pub recording_start_time: Option<Instant>,
     pub recording_path: Option<PathBuf>,
     pub tracks_dir: String,
-    pub rec_input_device: String, // ALSA input device for recording
-    pub rec_channel_count: u32,   // Number of channels to record
+    pub rec_input_device: String,  // ALSA input device for recording
+    pub rec_channel_count: u32,    // Number of channels to record
+    pub mon_output_device: String, // ALSA output device for monitoring (should match playback card)
+    pub is_monitoring: bool,
 }
 
 impl Default for App {
@@ -75,6 +77,8 @@ impl Default for App {
             tracks_dir: "tracks".to_string(),
             rec_input_device: "hw:0,0".to_string(),
             rec_channel_count: 8,
+            mon_output_device: "hw:0,0".to_string(),
+            is_monitoring: false,
         }
     }
 }
@@ -249,11 +253,13 @@ impl App {
 
 
     pub fn play(&mut self) {
-        if let Some(current_track) = self.track_list.get(self.current_track_index) {
-            if !self.is_playing {
-                self.audio_player.play(current_track, self.track_channel_count, self.volume, self.max_volume, &self.eq_bands, self.eq_enabled).unwrap();
-                self.is_playing = true;
+        if self.track_list.get(self.current_track_index).is_some() && !self.is_playing {
+            if self.is_monitoring {
+                let _ = self.stop_monitoring();
             }
+            let current_track = self.track_list[self.current_track_index].clone();
+            self.audio_player.play(&current_track, self.track_channel_count, self.volume, self.max_volume, &self.eq_bands, self.eq_enabled).unwrap();
+            self.is_playing = true;
         }
     }
 
@@ -396,9 +402,12 @@ impl App {
     }
 
     pub fn start_recording(&mut self) -> AppResult<()> {
-        // Stop playback so recording doesn't conflict
+        // Stop playback and monitoring so they don't conflict
         if self.is_playing {
             self.stop()?;
+        }
+        if self.is_monitoring {
+            self.stop_monitoring()?;
         }
 
         let ts = std::time::SystemTime::now()
@@ -449,6 +458,11 @@ impl App {
     }
 
     pub fn check_playback_status(&mut self) {
+        // Detect if monitoring stopped unexpectedly
+        if self.is_monitoring && !self.audio_player.is_monitoring() {
+            self.is_monitoring = false;
+        }
+
         // Detect if recording stopped unexpectedly (e.g. ffmpeg error)
         if self.is_recording && !self.audio_player.is_recording() {
             self.is_recording = false;
@@ -493,11 +507,43 @@ impl App {
         }
     }
 
+    pub fn toggle_monitoring(&mut self) {
+        if self.is_monitoring {
+            let _ = self.stop_monitoring();
+        } else {
+            let _ = self.start_monitoring();
+        }
+    }
+
+    pub fn start_monitoring(&mut self) -> AppResult<()> {
+        if self.is_playing {
+            self.stop()?;
+        }
+        if self.is_recording {
+            self.stop_recording()?;
+        }
+        let input_device = self.rec_input_device.clone();
+        let output_device = self.mon_output_device.clone();
+        let channel_count = self.rec_channel_count;
+        self.channel_levels = vec![-60.0; channel_count as usize];
+        self.audio_player.start_monitoring(&input_device, &output_device, channel_count)?;
+        self.is_monitoring = true;
+        Ok(())
+    }
+
+    pub fn stop_monitoring(&mut self) -> AppResult<()> {
+        self.audio_player.stop_monitoring()?;
+        self.is_monitoring = false;
+        Ok(())
+    }
+
     pub fn update_playback_info(&mut self) {
         if self.is_playing {
             self.current_position = self.audio_player.get_time_pos().ok();
             self.channel_levels = self.audio_player.get_channel_levels();
         } else if self.is_recording {
+            self.channel_levels = self.audio_player.get_raw_levels();
+        } else if self.is_monitoring {
             self.channel_levels = self.audio_player.get_raw_levels();
         }
     }
@@ -541,6 +587,9 @@ impl App {
             if let Some(rec_channel_count) = config["rec_channel_count"].as_u64() {
                 self.rec_channel_count = rec_channel_count as u32;
             }
+            if let Some(mon_output_device) = config["mon_output_device"].as_str() {
+                self.mon_output_device = mon_output_device.to_string();
+            }
         }
 
         Ok(())
@@ -563,6 +612,7 @@ impl App {
             "eq_enabled": self.eq_enabled,
             "rec_input_device": self.rec_input_device,
             "rec_channel_count": self.rec_channel_count,
+            "mon_output_device": self.mon_output_device,
         });
 
         fs::write(config_path, serde_json::to_string_pretty(&config)?)?;

@@ -6,6 +6,24 @@ use std::time::Instant;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+const LOG_PATH: &str = "/tmp/octotrack.log";
+
+fn log(msg: &str) {
+    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(LOG_PATH) {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let _ = writeln!(f, "[{}] {}", ts, msg);
+    }
+}
+
+fn log_stdio() -> Stdio {
+    OpenOptions::new().create(true).append(true).open(LOG_PATH)
+        .map(Stdio::from)
+        .unwrap_or_else(|_| Stdio::null())
+}
+
 pub struct AudioPlayer {
     process: Option<Child>,
     ffmpeg_process: Option<Child>,
@@ -17,6 +35,9 @@ pub struct AudioPlayer {
     current_volume: u8,
     recording_process: Option<Child>,
     recording_thread: Option<thread::JoinHandle<()>>,
+    monitoring_arecord: Option<Child>,
+    monitoring_aplay: Option<Child>,
+    monitoring_thread: Option<thread::JoinHandle<()>>,
 }
 
 impl AudioPlayer {
@@ -33,6 +54,9 @@ impl AudioPlayer {
             current_volume: 100,
             recording_process: None,
             recording_thread: None,
+            monitoring_arecord: None,
+            monitoring_aplay: None,
+            monitoring_thread: None,
         }
     }
 
@@ -459,6 +483,8 @@ impl AudioPlayer {
     }
 
     pub fn start_recording(&mut self, output_path: &PathBuf, input_device: &str, channel_count: u32) -> io::Result<()> {
+        log(&format!("start_recording: device={} channels={} path={:?}", input_device, channel_count, output_path));
+        self.stop_monitoring()?;
         self.stop_recording()?;
 
         if let Some(parent) = output_path.parent() {
@@ -478,9 +504,12 @@ impl AudioPlayer {
             .arg("-t").arg("raw")
             .arg("--buffer-size=65536")
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(log_stdio())
             .stdin(Stdio::null())
-            .spawn()?;
+            .spawn()
+            .map_err(|e| { log(&format!("arecord spawn failed: {}", e)); e })?;
+
+        log("arecord spawned for recording");
 
         let stdout = child.stdout.take()
             .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "arecord stdout missing"))?;
@@ -499,6 +528,7 @@ impl AudioPlayer {
     }
 
     pub fn stop_recording(&mut self) -> io::Result<()> {
+        log("stop_recording called");
         if let Some(mut process) = self.recording_process.take() {
             let still_running = process.try_wait()?.is_none();
             if still_running {
@@ -536,6 +566,103 @@ impl AudioPlayer {
             }
         }
         false
+    }
+
+    pub fn start_monitoring(&mut self, input_device: &str, output_device: &str, channel_count: u32) -> io::Result<()> {
+        log(&format!("start_monitoring: in={} out={} channels={}", input_device, output_device, channel_count));
+        self.stop_monitoring()?;
+
+        *self.channel_levels.lock().unwrap() = vec![-60.0; channel_count as usize];
+
+        let mut arecord = Command::new("arecord")
+            .arg("-D").arg(input_device)
+            .arg("-c").arg(channel_count.to_string())
+            .arg("-r").arg("192000")
+            .arg("-f").arg("S32_LE")
+            .arg("-t").arg("raw")
+            .arg("--buffer-size=65536")
+            .stdout(Stdio::piped())
+            .stderr(log_stdio())
+            .stdin(Stdio::null())
+            .spawn()
+            .map_err(|e| { log(&format!("monitor arecord spawn failed: {}", e)); e })?;
+
+        log("monitor arecord spawned");
+
+        let mut aplay = match Command::new("aplay")
+            .arg("-D").arg(output_device)
+            .arg("-c").arg(channel_count.to_string())
+            .arg("-r").arg("192000")
+            .arg("-f").arg("S32_LE")
+            .arg("-t").arg("raw")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(log_stdio())
+            .spawn()
+        {
+            Ok(p) => { log("monitor aplay spawned"); p }
+            Err(e) => {
+                log(&format!("monitor aplay spawn failed: {}", e));
+                let _ = arecord.kill();
+                let _ = arecord.wait();
+                return Err(e);
+            }
+        };
+
+        let arecord_stdout = arecord.stdout.take()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "arecord stdout missing"))?;
+        let aplay_stdin = aplay.stdin.take()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "aplay stdin missing"))?;
+
+        let levels = Arc::clone(&self.channel_levels);
+        let ch = channel_count as usize;
+
+        let handle = thread::spawn(move || {
+            monitor_and_analyse(arecord_stdout, aplay_stdin, ch, levels);
+        });
+
+        self.monitoring_arecord = Some(arecord);
+        self.monitoring_aplay = Some(aplay);
+        self.monitoring_thread = Some(handle);
+        Ok(())
+    }
+
+    pub fn stop_monitoring(&mut self) -> io::Result<()> {
+        log("stop_monitoring called");
+        // Kill aplay FIRST so the monitoring thread unblocks from write_all,
+        // otherwise waiting for arecord deadlocks (thread can't drain the pipe).
+        if let Some(mut process) = self.monitoring_aplay.take() {
+            let _ = process.kill();
+            let _ = process.wait();
+        }
+        if let Some(process) = self.monitoring_arecord.take() {
+            let pid = process.id();
+            let _ = Command::new("kill")
+                .arg("-TERM")
+                .arg(pid.to_string())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+            let mut p = process;
+            let _ = p.wait();
+        }
+        if let Some(handle) = self.monitoring_thread.take() {
+            let _ = handle.join();
+        }
+        Ok(())
+    }
+
+    pub fn is_monitoring(&mut self) -> bool {
+        match &mut self.monitoring_arecord {
+            None => false,
+            Some(p) => match p.try_wait() {
+                Ok(None) => true,
+                _ => {
+                    self.monitoring_arecord = None;
+                    false
+                }
+            },
+        }
     }
 
     pub fn get_raw_levels(&self) -> Vec<f32> {
@@ -655,10 +782,74 @@ fn record_and_analyse<R: Read>(
 
     // Finalise WAV header with actual data size
     let _ = write_header(&mut file, total_bytes);
+    log(&format!("record_and_analyse done: {} bytes written", total_bytes));
+}
+
+/// Reads raw S24_3LE PCM from `reader` (arecord stdout), writes it to `writer` (aplay stdin)
+/// for direct channel monitoring, and concurrently updates `levels` with per-channel RMS in dB.
+fn monitor_and_analyse<R: Read, W: Write>(
+    mut reader: R,
+    mut writer: W,
+    channels: usize,
+    levels: Arc<Mutex<Vec<f32>>>,
+) {
+    const BYTES_PER_SAMPLE: usize = 4; // S32_LE
+    const SAMPLE_RATE: usize = 192_000;
+    let frame_size = channels * BYTES_PER_SAMPLE;
+
+    // 100ms RMS window at 192kHz
+    let window_frames: usize = SAMPLE_RATE / 10;
+    let mut ch_bufs: Vec<Vec<f32>> = vec![vec![]; channels];
+    let mut cur_levels = vec![-60.0f32; channels];
+
+    let buf_size = frame_size * 4096;
+    let mut buf = vec![0u8; buf_size];
+
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                if writer.write_all(&buf[..n]).is_err() {
+                    break;
+                }
+
+                let num_frames = n / frame_size;
+                for i in 0..num_frames {
+                    for ch in 0..channels {
+                        let off = i * frame_size + ch * BYTES_PER_SAMPLE;
+                        if off + 3 < n {
+                            let s = i32::from_le_bytes([buf[off], buf[off+1], buf[off+2], buf[off+3]]);
+                            ch_bufs[ch].push(s as f32 / i32::MAX as f32);
+                        }
+                    }
+                }
+
+                let mut updated = false;
+                for ch in 0..channels {
+                    if ch_bufs[ch].len() >= window_frames {
+                        let rms = (ch_bufs[ch].iter().map(|&s| s * s).sum::<f32>()
+                            / ch_bufs[ch].len() as f32)
+                            .sqrt();
+                        let db = if rms > 0.0 { 20.0 * rms.log10() } else { -60.0 };
+                        cur_levels[ch] = db.max(-60.0).min(0.0);
+                        ch_bufs[ch].clear();
+                        updated = true;
+                    }
+                }
+                if updated {
+                    if let Ok(mut g) = levels.lock() {
+                        *g = cur_levels.clone();
+                    }
+                }
+            }
+            Err(_) => break,
+        }
+    }
 }
 
 impl Drop for AudioPlayer {
     fn drop(&mut self) {
+        let _ = self.stop_monitoring();
         let _ = self.stop_recording();
         let _ = self.stop();
     }
