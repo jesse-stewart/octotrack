@@ -1,4 +1,4 @@
-use std::{error, path::PathBuf, process::Command, fs};
+use std::{error, path::PathBuf, process::Command, fs, time::Instant};
 use walkdir::WalkDir;
 use crate::audio::AudioPlayer;
 use serde_json::{json, Value};
@@ -37,6 +37,12 @@ pub struct App {
     pub eq_enabled: bool, // EQ bypass toggle
     pub show_eq: bool, // Show EQ overlay
     pub eq_selected_band: usize, // Currently selected EQ band (0-9)
+    pub is_recording: bool,
+    pub recording_start_time: Option<Instant>,
+    pub recording_path: Option<PathBuf>,
+    pub tracks_dir: String,
+    pub rec_input_device: String, // ALSA input device for recording
+    pub rec_channel_count: u32,   // Number of channels to record
 }
 
 impl Default for App {
@@ -63,6 +69,12 @@ impl Default for App {
             eq_enabled: true,
             show_eq: false,
             eq_selected_band: 0,
+            is_recording: false,
+            recording_start_time: None,
+            recording_path: None,
+            tracks_dir: "tracks".to_string(),
+            rec_input_device: "hw:0,0".to_string(),
+            rec_channel_count: 8,
         }
     }
 }
@@ -173,6 +185,7 @@ impl App {
     }
 
     pub fn load_tracks(&mut self, folder_path: &str) -> AppResult<()> {
+        self.tracks_dir = folder_path.to_string();
         let mut tracks = vec![];
 
         for entry in WalkDir::new(folder_path)
@@ -374,7 +387,86 @@ impl App {
         Ok(())
     }
 
+    pub fn toggle_recording(&mut self) {
+        if self.is_recording {
+            let _ = self.stop_recording();
+        } else {
+            let _ = self.start_recording();
+        }
+    }
+
+    pub fn start_recording(&mut self) -> AppResult<()> {
+        // Stop playback so recording doesn't conflict
+        if self.is_playing {
+            self.stop()?;
+        }
+
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let filename = format!("REC_{}.wav", ts);
+        let output_path = PathBuf::from(&self.tracks_dir).join(&filename);
+
+        let input_device = self.rec_input_device.clone();
+        let channel_count = self.rec_channel_count;
+        self.audio_player.start_recording(&output_path, &input_device, channel_count)?;
+        self.is_recording = true;
+        self.recording_start_time = Some(Instant::now());
+        self.recording_path = Some(output_path);
+        Ok(())
+    }
+
+    pub fn stop_recording(&mut self) -> AppResult<()> {
+        self.audio_player.stop_recording()?;
+        self.is_recording = false;
+        self.recording_start_time = None;
+
+        let saved_path = self.recording_path.take();
+
+        // Reload tracks so the new recording appears in the list
+        let tracks_dir = self.tracks_dir.clone();
+        let _ = self.load_tracks(&tracks_dir);
+
+        // Select the track we just recorded
+        if let Some(ref rec_path) = saved_path {
+            // Canonicalise both sides of the comparison so relative vs absolute doesn't matter
+            let canon_rec = rec_path.canonicalize().unwrap_or_else(|_| rec_path.clone());
+            if let Some(idx) = self.track_list.iter().position(|p| {
+                p.canonicalize().unwrap_or_else(|_| p.clone()) == canon_rec
+            }) {
+                self.current_track_index = idx;
+                self.get_metadata();
+            }
+        }
+        Ok(())
+    }
+
+    pub fn recording_elapsed(&self) -> f32 {
+        self.recording_start_time
+            .map(|t| t.elapsed().as_secs_f32())
+            .unwrap_or(0.0)
+    }
+
     pub fn check_playback_status(&mut self) {
+        // Detect if recording stopped unexpectedly (e.g. ffmpeg error)
+        if self.is_recording && !self.audio_player.is_recording() {
+            self.is_recording = false;
+            self.recording_start_time = None;
+            let saved_path = self.recording_path.take();
+            let tracks_dir = self.tracks_dir.clone();
+            let _ = self.load_tracks(&tracks_dir);
+            if let Some(ref rec_path) = saved_path {
+                let canon_rec = rec_path.canonicalize().unwrap_or_else(|_| rec_path.clone());
+                if let Some(idx) = self.track_list.iter().position(|p| {
+                    p.canonicalize().unwrap_or_else(|_| p.clone()) == canon_rec
+                }) {
+                    self.current_track_index = idx;
+                    self.get_metadata();
+                }
+            }
+        }
+
         if self.is_playing && !self.audio_player.is_running() {
             // Track finished playing
             self.is_playing = false;
@@ -441,6 +533,12 @@ impl App {
             if let Some(eq_enabled) = config["eq_enabled"].as_bool() {
                 self.eq_enabled = eq_enabled;
             }
+            if let Some(rec_input_device) = config["rec_input_device"].as_str() {
+                self.rec_input_device = rec_input_device.to_string();
+            }
+            if let Some(rec_channel_count) = config["rec_channel_count"].as_u64() {
+                self.rec_channel_count = rec_channel_count as u32;
+            }
         }
 
         Ok(())
@@ -460,7 +558,9 @@ impl App {
             "max_volume": self.max_volume,
             "autoplay": self.autoplay,
             "eq_bands": eq_bands_vec,
-            "eq_enabled": self.eq_enabled
+            "eq_enabled": self.eq_enabled,
+            "rec_input_device": self.rec_input_device,
+            "rec_channel_count": self.rec_channel_count,
         });
 
         fs::write(config_path, serde_json::to_string_pretty(&config)?)?;

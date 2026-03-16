@@ -21,6 +21,13 @@ A terminal-based multi-channel audio player built with Rust and Ratatui. Designe
 
 ### Dependencies
 
+Install Rust (if not already installed):
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source $HOME/.cargo/env
+```
+
 Install required system dependencies:
 
 ```bash

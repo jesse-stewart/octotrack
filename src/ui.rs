@@ -54,11 +54,12 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     let status_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(20),
-            Constraint::Percentage(20),
-            Constraint::Percentage(20),
-            Constraint::Percentage(20),
-            Constraint::Percentage(20),
+            Constraint::Ratio(1, 6),
+            Constraint::Ratio(1, 6),
+            Constraint::Ratio(1, 6),
+            Constraint::Ratio(1, 6),
+            Constraint::Ratio(1, 6),
+            Constraint::Ratio(1, 6),
         ])
         .split(chunks[3]);
 
@@ -143,8 +144,17 @@ pub fn render(app: &mut App, frame: &mut Frame) {
 
     let autoplay_text = if app.autoplay { "On" } else { "Off" };
 
+    let rec_status = if app.is_recording {
+        let elapsed = app.recording_elapsed();
+        let min = (elapsed / 60.0) as u32;
+        let sec = (elapsed % 60.0) as u32;
+        format!("\u{25cf} REC {:02}:{:02}", min, sec)
+    } else {
+        format!("In: {} ({}ch)", app.rec_input_device, app.rec_channel_count)
+    };
+
     let info_content = Paragraph::new(format!(
-        "Artist:\n{}\n\nTrack:\n{}\n\nTrack #:{}/{}\n\n{} Channels\n\nLoop: {}\nAutoplay: {}",
+        "Artist:\n{}\n\nTrack:\n{}\n\nTrack #:{}/{}\n\n{} Channels\n\nLoop: {}\nAutoplay: {}\n\n{}",
         artist_display,
         title_display,
         app.current_track_index + 1,
@@ -152,6 +162,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         app.track_channel_count,
         loop_text,
         autoplay_text,
+        rec_status,
     ))
     .block(
         Block::default()
@@ -302,6 +313,29 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         })
         .alignment(Alignment::Center);
 
+    let rec_label = if app.is_recording {
+        let elapsed = app.recording_elapsed();
+        let min = (elapsed / 60.0) as u32;
+        let sec = (elapsed % 60.0) as u32;
+        format!("[R] \u{25cf} {:02}:{:02}", min, sec)
+    } else {
+        "[R] Record".to_string()
+    };
+
+    let status_content_6 = Paragraph::new(rec_label)
+        .block(
+            Block::default()
+                .border_type(BorderType::Double)
+                .borders(Borders::ALL)
+                .padding(Padding::new(1, 1, 0, 0)),
+        )
+        .style(if app.is_recording {
+            Style::default().fg(Color::Red).bold()
+        } else {
+            Style::default()
+        })
+        .alignment(Alignment::Center);
+
     // Render each widget in its respective area
     frame.render_widget(title_block.clone(), title_chunks[0]);
     let title_inner = title_block.inner(title_chunks[0]);
@@ -315,6 +349,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     frame.render_widget(status_content_3, status_chunks[2]);
     frame.render_widget(status_content_4, status_chunks[3]);
     frame.render_widget(status_content_5, status_chunks[4]);
+    frame.render_widget(status_content_6, status_chunks[5]);
 
     // Render quit confirmation dialog if showing
     if app.show_quit_dialog {

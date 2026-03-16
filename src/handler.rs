@@ -70,6 +70,9 @@ pub fn handle_key_events(key_event: KeyEvent, app: &mut App) -> AppResult<()> {
         KeyCode::Char('e') => {
             app.toggle_eq_view();
         }
+        KeyCode::Char('r') | KeyCode::Char('R') => {
+            app.toggle_recording();
+        }
         // Volume control
         KeyCode::Up => {
             app.increase_volume();

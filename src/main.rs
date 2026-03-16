@@ -100,7 +100,9 @@ fn main() -> AppResult<()> {
 
 
     // Get initial track metadata
-    app.get_metadata();
+    if !app.track_list.is_empty() {
+        app.get_metadata();
+    }
 
     // Auto-play if enabled in config
     if app.autoplay && !app.track_list.is_empty() {
@@ -128,6 +130,7 @@ fn main() -> AppResult<()> {
     }
 
     // Exit the user interface.
+    let _ = app.audio_player.stop_recording();
     app.audio_player.stop()?;
     tui.exit()?;
     Ok(())

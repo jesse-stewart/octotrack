@@ -15,6 +15,7 @@ pub struct AudioPlayer {
     start_time: Option<Instant>,
     channel_levels: Arc<Mutex<Vec<f32>>>,
     current_volume: u8,
+    recording_process: Option<Child>,
 }
 
 impl AudioPlayer {
@@ -29,6 +30,7 @@ impl AudioPlayer {
             start_time: None,
             channel_levels: Arc::new(Mutex::new(Vec::new())),
             current_volume: 100,
+            recording_process: None,
         }
     }
 
@@ -454,6 +456,67 @@ impl AudioPlayer {
         }
     }
 
+    pub fn start_recording(&mut self, output_path: &PathBuf, input_device: &str, channel_count: u32) -> io::Result<()> {
+        self.stop_recording()?;
+
+        // Ensure parent directory exists
+        if let Some(parent) = output_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let process = Command::new("arecord")
+            .arg("-D").arg(input_device)
+            .arg("-c").arg(channel_count.to_string())
+            .arg("-r").arg("48000")
+            .arg("-f").arg("S32_LE")
+            .arg("-t").arg("wav")
+            .arg("--buffer-size=65536")
+            .arg(output_path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?;
+
+        self.recording_process = Some(process);
+        Ok(())
+    }
+
+    pub fn stop_recording(&mut self) -> io::Result<()> {
+        if let Some(mut process) = self.recording_process.take() {
+            let still_running = process.try_wait()?.is_none();
+            if still_running {
+                // SIGTERM lets ffmpeg flush buffers and finalize the WAV header
+                let pid = process.id();
+                let _ = Command::new("kill")
+                    .arg("-TERM")
+                    .arg(pid.to_string())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+                std::thread::sleep(std::time::Duration::from_millis(600));
+                let _ = process.kill(); // force kill if still alive after grace period
+            }
+            let _ = process.wait(); // always reap to avoid zombies
+        }
+        Ok(())
+    }
+
+    pub fn is_recording(&mut self) -> bool {
+        let exited = match &mut self.recording_process {
+            None => return false,
+            Some(p) => match p.try_wait() {
+                Ok(None) => return true,   // still running
+                _ => true,                  // exited or error
+            },
+        };
+        if exited {
+            if let Some(mut p) = self.recording_process.take() {
+                let _ = p.wait(); // reap zombie
+            }
+        }
+        false
+    }
+
     pub fn get_channel_levels(&self) -> Vec<f32> {
         let raw_levels = self.channel_levels.lock().unwrap().clone();
 
@@ -475,7 +538,7 @@ impl AudioPlayer {
 
 impl Drop for AudioPlayer {
     fn drop(&mut self) {
-        // Clean up processes and FIFO on drop
+        let _ = self.stop_recording();
         let _ = self.stop();
     }
 }
