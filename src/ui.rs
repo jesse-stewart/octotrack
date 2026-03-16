@@ -171,7 +171,11 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     );
 
     // Create channel meters using BarChart
-    let channel_count = app.channel_levels.len().min(app.track_channel_count as usize);
+    let channel_count = if app.is_recording {
+        app.channel_levels.len().min(app.rec_channel_count as usize)
+    } else {
+        app.channel_levels.len().min(app.track_channel_count as usize)
+    };
 
     let bar_chart_block = Block::default()
         .title("Channel Levels (dB)")
@@ -180,7 +184,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         .borders(Borders::ALL)
         .padding(Padding::new(1, 1, 0, 0));
 
-    if channel_count > 0 && app.is_playing {
+    if channel_count > 0 && (app.is_playing || app.is_recording) {
         let bars: Vec<Bar> = app.channel_levels.iter().enumerate().take(channel_count)
             .map(|(i, &level)| {
                 // Convert dB to a display value (0-60 range for visualization)
@@ -218,8 +222,8 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         frame.render_widget(bar_chart, meter_chunks[0]);
     } else {
         // Show placeholder when not playing
-        let placeholder = Paragraph::new(if !app.is_playing {
-            "Press [Space] to start playback"
+        let placeholder = Paragraph::new(if !app.is_playing && !app.is_recording {
+            "Press [Space] to play  [R] to record"
         } else {
             "Initializing meters..."
         })

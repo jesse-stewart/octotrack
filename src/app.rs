@@ -497,6 +497,8 @@ impl App {
         if self.is_playing {
             self.current_position = self.audio_player.get_time_pos().ok();
             self.channel_levels = self.audio_player.get_channel_levels();
+        } else if self.is_recording {
+            self.channel_levels = self.audio_player.get_raw_levels();
         }
     }
 

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use std::process::{Command, Child, Stdio};
-use std::io::{self, Write, Read};
+use std::io::{self, Write, Read, Seek, SeekFrom};
 use std::fs::{File, OpenOptions};
 use std::time::Instant;
 use std::sync::{Arc, Mutex};
@@ -16,6 +16,7 @@ pub struct AudioPlayer {
     channel_levels: Arc<Mutex<Vec<f32>>>,
     current_volume: u8,
     recording_process: Option<Child>,
+    recording_thread: Option<thread::JoinHandle<()>>,
 }
 
 impl AudioPlayer {
@@ -31,6 +32,7 @@ impl AudioPlayer {
             channel_levels: Arc::new(Mutex::new(Vec::new())),
             current_volume: 100,
             recording_process: None,
+            recording_thread: None,
         }
     }
 
@@ -459,25 +461,40 @@ impl AudioPlayer {
     pub fn start_recording(&mut self, output_path: &PathBuf, input_device: &str, channel_count: u32) -> io::Result<()> {
         self.stop_recording()?;
 
-        // Ensure parent directory exists
         if let Some(parent) = output_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
 
-        let process = Command::new("arecord")
+        // Initialise shared levels for the recording channel count
+        *self.channel_levels.lock().unwrap() = vec![-60.0; channel_count as usize];
+
+        // arecord outputs raw PCM to stdout — we handle the WAV container ourselves
+        // so the same stream can feed both the file writer and the level analyser.
+        let mut child = Command::new("arecord")
             .arg("-D").arg(input_device)
             .arg("-c").arg(channel_count.to_string())
-            .arg("-r").arg("48000")
+            .arg("-r").arg("192000")
             .arg("-f").arg("S32_LE")
-            .arg("-t").arg("wav")
+            .arg("-t").arg("raw")
             .arg("--buffer-size=65536")
-            .arg(output_path)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
+            .stdout(Stdio::piped())
             .stderr(Stdio::null())
+            .stdin(Stdio::null())
             .spawn()?;
 
-        self.recording_process = Some(process);
+        let stdout = child.stdout.take()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "arecord stdout missing"))?;
+
+        let levels = Arc::clone(&self.channel_levels);
+        let out_path = output_path.clone();
+        let ch = channel_count as usize;
+
+        let handle = thread::spawn(move || {
+            record_and_analyse(stdout, out_path, ch, levels);
+        });
+
+        self.recording_process = Some(child);
+        self.recording_thread = Some(handle);
         Ok(())
     }
 
@@ -485,7 +502,8 @@ impl AudioPlayer {
         if let Some(mut process) = self.recording_process.take() {
             let still_running = process.try_wait()?.is_none();
             if still_running {
-                // SIGTERM lets ffmpeg flush buffers and finalize the WAV header
+                // SIGTERM causes arecord to flush its buffer and close stdout cleanly,
+                // which lets the writing thread see EOF and finalise the WAV header.
                 let pid = process.id();
                 let _ = Command::new("kill")
                     .arg("-TERM")
@@ -493,10 +511,13 @@ impl AudioPlayer {
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
                     .status();
-                std::thread::sleep(std::time::Duration::from_millis(600));
-                let _ = process.kill(); // force kill if still alive after grace period
             }
-            let _ = process.wait(); // always reap to avoid zombies
+            let _ = process.wait();
+        }
+        // Wait for the writing thread to finish — this guarantees the WAV header
+        // is fully updated on disk before we return.
+        if let Some(handle) = self.recording_thread.take() {
+            let _ = handle.join();
         }
         Ok(())
     }
@@ -517,6 +538,10 @@ impl AudioPlayer {
         false
     }
 
+    pub fn get_raw_levels(&self) -> Vec<f32> {
+        self.channel_levels.lock().unwrap().clone()
+    }
+
     pub fn get_channel_levels(&self) -> Vec<f32> {
         let raw_levels = self.channel_levels.lock().unwrap().clone();
 
@@ -534,6 +559,102 @@ impl AudioPlayer {
             .collect()
     }
 
+}
+
+/// Reads raw S32_LE PCM from `reader` (arecord stdout), writes a WAV file to
+/// `out_path`, and concurrently updates `levels` with per-channel RMS in dB.
+/// Called from a background thread; blocks until EOF (i.e. arecord exits).
+fn record_and_analyse<R: Read>(
+    mut reader: R,
+    out_path: PathBuf,
+    channels: usize,
+    levels: Arc<Mutex<Vec<f32>>>,
+) {
+    const SAMPLE_RATE: u32 = 192_000;
+    const BITS: u16 = 32;
+    const BYTES_PER_SAMPLE: usize = 4; // S32_LE
+
+    let byte_rate = SAMPLE_RATE * channels as u32 * BYTES_PER_SAMPLE as u32;
+    let block_align = channels as u16 * BYTES_PER_SAMPLE as u16;
+    let frame_size = channels * BYTES_PER_SAMPLE;
+
+    let mut file = match File::create(&out_path) {
+        Ok(f) => f,
+        Err(_) => return,
+    };
+
+    // Write a placeholder WAV header (data size filled in at the end)
+    let write_header = |f: &mut File, data_bytes: u32| -> io::Result<()> {
+        f.seek(SeekFrom::Start(0))?;
+        f.write_all(b"RIFF")?;
+        f.write_all(&(data_bytes + 36).to_le_bytes())?;
+        f.write_all(b"WAVE")?;
+        f.write_all(b"fmt ")?;
+        f.write_all(&16u32.to_le_bytes())?;          // PCM subchunk size
+        f.write_all(&1u16.to_le_bytes())?;            // AudioFormat = PCM
+        f.write_all(&(channels as u16).to_le_bytes())?;
+        f.write_all(&SAMPLE_RATE.to_le_bytes())?;
+        f.write_all(&byte_rate.to_le_bytes())?;
+        f.write_all(&block_align.to_le_bytes())?;
+        f.write_all(&BITS.to_le_bytes())?;
+        f.write_all(b"data")?;
+        f.write_all(&data_bytes.to_le_bytes())?;
+        Ok(())
+    };
+
+    if write_header(&mut file, 0).is_err() { return; }
+
+    // 100 ms RMS window at 192 kHz
+    let window_frames: usize = 19_200;
+    let mut ch_bufs: Vec<Vec<f32>> = vec![vec![]; channels];
+    let mut cur_levels = vec![-60.0f32; channels];
+
+    // Read buffer: 4096 frames at a time
+    let buf_size = frame_size * 4096;
+    let mut buf = vec![0u8; buf_size];
+    let mut total_bytes: u32 = 0;
+
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) => break, // EOF — arecord exited
+            Ok(n) => {
+                if file.write_all(&buf[..n]).is_err() { break; }
+                total_bytes += n as u32;
+
+                // Level analysis: decode S32_LE frames
+                let num_frames = n / frame_size;
+                for i in 0..num_frames {
+                    for ch in 0..channels {
+                        let off = i * frame_size + ch * BYTES_PER_SAMPLE;
+                        if off + 3 < n {
+                            let s = i32::from_le_bytes([buf[off], buf[off+1], buf[off+2], buf[off+3]]);
+                            ch_bufs[ch].push(s as f32 / i32::MAX as f32);
+                        }
+                    }
+                }
+
+                let mut updated = false;
+                for ch in 0..channels {
+                    if ch_bufs[ch].len() >= window_frames {
+                        let rms = (ch_bufs[ch].iter().map(|&s| s * s).sum::<f32>()
+                            / ch_bufs[ch].len() as f32)
+                            .sqrt();
+                        let db = if rms > 0.0 { 20.0 * rms.log10() } else { -60.0 };
+                        cur_levels[ch] = db.max(-60.0).min(0.0);
+                        ch_bufs[ch].clear();
+                        updated = true;
+                    }
+                }
+                if updated {
+                    if let Ok(mut g) = levels.lock() { *g = cur_levels.clone(); }
+                }
+            }
+            Err(_) => break,
+        }
+    }
+
+    // Finalise WAV header with actual data size
+    let _ = write_header(&mut file, total_bytes);
 }
 
 impl Drop for AudioPlayer {
