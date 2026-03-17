@@ -1,4 +1,4 @@
-use crate::audio::AudioPlayer;
+use crate::audio::{AudioPlayer, RecordingConfig};
 use serde_json::{json, Value};
 use std::{error, fs, path::PathBuf, process::Command, time::Instant};
 use walkdir::WalkDir;
@@ -472,10 +472,13 @@ impl App {
         } else {
             None
         };
-        let drop_mode = self.rec_max_file_mode == RecMaxMode::Drop;
-        let min_free_bytes = self.rec_min_free_mb * 1024 * 1024;
+        let rec_cfg = RecordingConfig {
+            max_data_bytes,
+            drop_mode: self.rec_max_file_mode == RecMaxMode::Drop,
+            min_free_bytes: self.rec_min_free_mb * 1024 * 1024,
+        };
         self.audio_player
-            .start_recording(&output_path, &input_device, channel_count, sample_rate, bit_depth, max_data_bytes, drop_mode, min_free_bytes)?;
+            .start_recording(&output_path, &input_device, channel_count, sample_rate, bit_depth, rec_cfg)?;
         // If monitoring was active, re-enable it on the new capture session.
         if self.is_monitoring {
             let output_device = self.mon_output_device.clone();

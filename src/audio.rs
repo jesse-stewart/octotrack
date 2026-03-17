@@ -1,6 +1,6 @@
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -50,6 +50,12 @@ fn log_stdio() -> Stdio {
         .open(log_path())
         .map(Stdio::from)
         .unwrap_or_else(|_| Stdio::null())
+}
+
+pub struct RecordingConfig {
+    pub max_data_bytes: Option<u64>,
+    pub drop_mode: bool,
+    pub min_free_bytes: u64,
 }
 
 pub struct AudioPlayer {
@@ -602,18 +608,16 @@ impl AudioPlayer {
 
     pub fn start_recording(
         &mut self,
-        output_path: &PathBuf,
+        output_path: &Path,
         input_device: &str,
         channel_count: u32,
         sample_rate: u32,
         bit_depth: u16,
-        max_data_bytes: Option<u64>,
-        drop_mode: bool,
-        min_free_bytes: u64,
+        rec_cfg: RecordingConfig,
     ) -> io::Result<()> {
         log(&format!(
             "start_recording: device={} channels={} rate={} bits={} max={:?} drop={} min_free={} path={:?}",
-            input_device, channel_count, sample_rate, bit_depth, max_data_bytes, drop_mode, min_free_bytes, output_path
+            input_device, channel_count, sample_rate, bit_depth, rec_cfg.max_data_bytes, rec_cfg.drop_mode, rec_cfg.min_free_bytes, output_path
         ));
         self.stop_capture()?;
 
@@ -621,7 +625,7 @@ impl AudioPlayer {
             std::fs::create_dir_all(parent)?;
         }
         *self.channel_levels.lock().unwrap() = vec![-60.0; channel_count as usize];
-        self.start_capture_internal(input_device, channel_count, sample_rate, bit_depth, Some(output_path.clone()), None, max_data_bytes, drop_mode, min_free_bytes)?;
+        self.start_capture_internal(input_device, channel_count, sample_rate, bit_depth, Some(output_path.to_path_buf()), None, rec_cfg)?;
         self.capture_is_recording = true;
         Ok(())
     }
@@ -673,7 +677,7 @@ impl AudioPlayer {
         // No active capture — start a monitoring-only session.
         self.stop_capture()?;
         *self.channel_levels.lock().unwrap() = vec![-60.0; channel_count as usize];
-        self.start_capture_internal(input_device, channel_count, sample_rate, bit_depth, None, Some(output_device), None, false, 0)
+        self.start_capture_internal(input_device, channel_count, sample_rate, bit_depth, None, Some(output_device), RecordingConfig { max_data_bytes: None, drop_mode: false, min_free_bytes: 0 })
     }
 
     pub fn stop_monitoring(&mut self) -> io::Result<()> {
@@ -782,6 +786,7 @@ impl AudioPlayer {
     /// Spawn arecord and a processing thread.
     /// `wav_path` — Some to write a WAV recording.
     /// `monitor_output` — Some(device) to also start aplay and route audio to it.
+    #[allow(clippy::too_many_arguments)]
     fn start_capture_internal(
         &mut self,
         input_device: &str,
@@ -790,10 +795,9 @@ impl AudioPlayer {
         bit_depth: u16,
         wav_path: Option<PathBuf>,
         monitor_output: Option<&str>,
-        max_data_bytes: Option<u64>,
-        drop_mode: bool,
-        min_free_bytes: u64,
+        rec_cfg: RecordingConfig,
     ) -> io::Result<()> {
+        let RecordingConfig { max_data_bytes, drop_mode, min_free_bytes } = rec_cfg;
         let mut arecord = Command::new("arecord")
             .arg("-D")
             .arg(input_device)
@@ -903,20 +907,21 @@ impl AudioPlayer {
 /// - If `wav_path` is Some, writes a WAV file (header finalised on EOF).
 /// - If `monitor_sink` contains Some(stdin), routes audio to aplay; clears on broken pipe.
 /// - Updates `levels` with per-channel RMS in dB.
-fn free_bytes_on_path(path: &PathBuf) -> Option<u64> {
+fn free_bytes_on_path(path: &Path) -> Option<u64> {
     use std::ffi::CString;
     let dir = path.parent().unwrap_or(path);
     let cpath = CString::new(dir.to_string_lossy().as_bytes()).ok()?;
     unsafe {
         let mut stat: libc::statvfs = std::mem::zeroed();
         if libc::statvfs(cpath.as_ptr(), &mut stat) == 0 {
-            Some(stat.f_bavail as u64 * stat.f_frsize as u64)
+            Some(stat.f_bavail * stat.f_frsize)
         } else {
             None
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn capture_and_analyse<R: Read>(
     mut reader: R,
     wav_path: Option<PathBuf>,
@@ -1120,7 +1125,7 @@ fn capture_and_analyse<R: Read>(
                                         } else if !wrapped {
                                             // Lock current size as the circular buffer cap.
                                             let aligned = (logical_bytes / frame_size as u64) * frame_size as u64;
-                                            if max_data.map_or(true, |m| aligned < m) {
+                                            if max_data.is_none_or(|m| aligned < m) {
                                                 log(&format!(
                                                     "capture_and_analyse: disk space low ({} bytes free), capping at {} bytes and looping",
                                                     free, aligned
@@ -1257,7 +1262,11 @@ fn capture_and_analyse<R: Read>(
 
         // Normal finalize (no wrap, or unlimited, or stop mode).
         let _ = write_header(&mut file, logical_bytes);
-        let fmt = if logical_bytes > MAX_WAV_DATA { "RF64" } else { "WAV" };
+        let fmt = if logical_bytes > MAX_WAV_DATA {
+            "RF64"
+        } else {
+            "WAV"
+        };
         log(&format!(
             "capture_and_analyse: {} bytes written as {}{}",
             logical_bytes,
