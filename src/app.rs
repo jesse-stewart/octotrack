@@ -41,10 +41,11 @@ pub struct App {
     pub recording_start_time: Option<Instant>,
     pub recording_path: Option<PathBuf>,
     pub tracks_dir: String,
-    pub playback_device: String,   // ALSA output device for playback
-    pub rec_input_device: String,  // ALSA input device for recording
-    pub rec_channel_count: u32,    // Number of channels to record
-    pub mon_output_device: String, // ALSA output device for monitoring (should match playback card)
+    pub playback_device: String,       // ALSA output device for playback
+    pub playback_channel_count: u32,   // Number of output channels the playback device supports
+    pub rec_input_device: String,      // ALSA input device for recording
+    pub rec_channel_count: u32,        // Number of channels to record
+    pub mon_output_device: String,     // ALSA output device for monitoring (should match playback card)
     pub is_monitoring: bool,
 }
 
@@ -77,6 +78,7 @@ impl Default for App {
             recording_path: None,
             tracks_dir: "tracks".to_string(),
             playback_device: "hw:0,0".to_string(),
+            playback_channel_count: 8,
             rec_input_device: "hw:0,0".to_string(),
             rec_channel_count: 8,
             mon_output_device: "hw:0,0".to_string(),
@@ -266,6 +268,7 @@ impl App {
                 .play(
                     &current_track,
                     self.track_channel_count,
+                    self.playback_channel_count,
                     self.volume,
                     self.max_volume,
                     &self.eq_bands,
@@ -623,6 +626,9 @@ impl App {
             if let Some(playback_device) = config["playback_device"].as_str() {
                 self.playback_device = playback_device.to_string();
             }
+            if let Some(playback_channel_count) = config["playback_channel_count"].as_u64() {
+                self.playback_channel_count = playback_channel_count as u32;
+            }
             if let Some(rec_input_device) = config["rec_input_device"].as_str() {
                 self.rec_input_device = rec_input_device.to_string();
             }
@@ -653,6 +659,7 @@ impl App {
             "eq_bands": eq_bands_vec,
             "eq_enabled": self.eq_enabled,
             "playback_device": self.playback_device,
+            "playback_channel_count": self.playback_channel_count,
             "rec_input_device": self.rec_input_device,
             "rec_channel_count": self.rec_channel_count,
             "mon_output_device": self.mon_output_device,

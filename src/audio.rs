@@ -81,6 +81,7 @@ impl AudioPlayer {
         &mut self,
         track_path: &PathBuf,
         channel_count: u32,
+        output_channel_count: u32,
         volume: u8,
         max_volume: u8,
         eq_bands: &[i8; 10],
@@ -88,9 +89,10 @@ impl AudioPlayer {
         playback_device: &str,
     ) -> io::Result<()> {
         log(&format!(
-            "play: path={} channels={} device={}",
+            "play: path={} channels={} output_channels={} device={}",
             track_path.display(),
             channel_count,
+            output_channel_count,
             playback_device
         ));
         // Ensure any existing process is stopped before starting a new one
@@ -128,7 +130,7 @@ impl AudioPlayer {
         if track_path.is_dir() {
             self.play_multi_file(
                 track_path,
-                channel_count,
+                output_channel_count,
                 volume,
                 max_volume,
                 eq_bands,
@@ -138,7 +140,7 @@ impl AudioPlayer {
         } else {
             self.play_single_file(
                 track_path,
-                channel_count,
+                output_channel_count,
                 volume,
                 max_volume,
                 eq_bands,
@@ -304,7 +306,7 @@ impl AudioPlayer {
     fn play_single_file(
         &mut self,
         file_path: &PathBuf,
-        channel_count: u32,
+        output_channel_count: u32,
         volume: u8,
         max_volume: u8,
         eq_bands: &[i8; 10],
@@ -318,7 +320,7 @@ impl AudioPlayer {
             .arg("-input")
             .arg(format!("file={}", self.fifo_path.display()))
             .arg("-channels")
-            .arg(channel_count.to_string())
+            .arg(output_channel_count.to_string())
             .arg("-softvol")
             .arg("-softvol-max")
             .arg(max_volume.to_string())
@@ -359,7 +361,7 @@ impl AudioPlayer {
     fn play_multi_file(
         &mut self,
         folder_path: &PathBuf,
-        channel_count: u32,
+        output_channel_count: u32,
         volume: u8,
         max_volume: u8,
         eq_bands: &[i8; 10],
@@ -392,7 +394,7 @@ impl AudioPlayer {
         if audio_files.len() == 1 {
             return self.play_single_file(
                 &audio_files[0],
-                channel_count,
+                output_channel_count,
                 volume,
                 max_volume,
                 eq_bands,
@@ -444,7 +446,7 @@ impl AudioPlayer {
             .arg("-input")
             .arg(format!("file={}", self.fifo_path.display()))
             .arg("-channels")
-            .arg(channel_count.to_string())
+            .arg(output_channel_count.to_string())
             .arg("-softvol")
             .arg("-softvol-max")
             .arg(max_volume.to_string())
