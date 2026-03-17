@@ -41,7 +41,7 @@ pub struct App {
     pub loop_mode: LoopMode,
     pub volume: u8,                    // Master volume 0-100
     pub max_volume: u8,                // Maximum volume level (softvol-max for mplayer)
-    pub auto_mode: AutoMode,            // Auto action on startup: Off, Play, or Rec
+    pub auto_mode: AutoMode,           // Auto action on startup: Off, Play, or Rec
     pub current_position: Option<f32>, // Current playback position in seconds
     pub track_duration: Option<f32>,   // Total track duration in seconds
     pub channel_levels: Vec<f32>,      // Per-channel RMS levels in dB
@@ -54,15 +54,15 @@ pub struct App {
     pub recording_start_time: Option<Instant>,
     pub recording_path: Option<PathBuf>,
     pub tracks_dir: String,
-    pub playback_device: String,     // ALSA output device for playback
-    pub playback_channel_count: u32, // Number of output channels the playback device supports
-    pub rec_input_device: String,    // ALSA input device for recording
-    pub rec_channel_count: u32,      // Number of channels to record
-    pub rec_sample_rate: u32,        // Sample rate for recording (e.g. 44100, 48000, 96000, 192000)
-    pub rec_bit_depth: u16,          // Bit depth for recording (16, 24, or 32)
-    pub rec_max_file_mb: u64,          // Max recording file size in MB (0 = unlimited)
+    pub playback_device: String,       // ALSA output device for playback
+    pub playback_channel_count: u32,   // Number of output channels the playback device supports
+    pub rec_input_device: String,      // ALSA input device for recording
+    pub rec_channel_count: u32,        // Number of channels to record
+    pub rec_sample_rate: u32, // Sample rate for recording (e.g. 44100, 48000, 96000, 192000)
+    pub rec_bit_depth: u16,   // Bit depth for recording (16, 24, or 32)
+    pub rec_max_file_mb: u64, // Max recording file size in MB (0 = unlimited)
     pub rec_max_file_mode: RecMaxMode, // What to do when max size is reached
-    pub rec_min_free_mb: u64,          // Stop/drop when free disk space drops below this (MB)
+    pub rec_min_free_mb: u64, // Stop/drop when free disk space drops below this (MB)
     pub mon_output_device: String, // ALSA output device for monitoring (should match playback card)
     pub is_monitoring: bool,
 }
@@ -477,14 +477,24 @@ impl App {
             drop_mode: self.rec_max_file_mode == RecMaxMode::Drop,
             min_free_bytes: self.rec_min_free_mb * 1024 * 1024,
         };
-        self.audio_player
-            .start_recording(&output_path, &input_device, channel_count, sample_rate, bit_depth, rec_cfg)?;
+        self.audio_player.start_recording(
+            &output_path,
+            &input_device,
+            channel_count,
+            sample_rate,
+            bit_depth,
+            rec_cfg,
+        )?;
         // If monitoring was active, re-enable it on the new capture session.
         if self.is_monitoring {
             let output_device = self.mon_output_device.clone();
-            let _ =
-                self.audio_player
-                    .start_monitoring(&input_device, &output_device, channel_count, sample_rate, bit_depth);
+            let _ = self.audio_player.start_monitoring(
+                &input_device,
+                &output_device,
+                channel_count,
+                sample_rate,
+                bit_depth,
+            );
         }
         self.is_recording = true;
         self.recording_start_time = Some(Instant::now());
@@ -506,9 +516,13 @@ impl App {
             let input_device = self.rec_input_device.clone();
             let output_device = self.mon_output_device.clone();
             let channel_count = self.rec_channel_count;
-            let _ =
-                self.audio_player
-                    .start_monitoring(&input_device, &output_device, channel_count, self.rec_sample_rate, self.rec_bit_depth);
+            let _ = self.audio_player.start_monitoring(
+                &input_device,
+                &output_device,
+                channel_count,
+                self.rec_sample_rate,
+                self.rec_bit_depth,
+            );
         }
 
         let saved_path = self.recording_path.take();
@@ -611,8 +625,13 @@ impl App {
         let output_device = self.mon_output_device.clone();
         let channel_count = self.rec_channel_count;
         self.channel_levels = vec![-60.0; channel_count as usize];
-        self.audio_player
-            .start_monitoring(&input_device, &output_device, channel_count, self.rec_sample_rate, self.rec_bit_depth)?;
+        self.audio_player.start_monitoring(
+            &input_device,
+            &output_device,
+            channel_count,
+            self.rec_sample_rate,
+            self.rec_bit_depth,
+        )?;
         self.is_monitoring = true;
         Ok(())
     }
@@ -660,7 +679,11 @@ impl App {
                 };
             } else if let Some(autoplay) = config["autoplay"].as_bool() {
                 // Backwards compat with old config
-                self.auto_mode = if autoplay { AutoMode::Play } else { AutoMode::Off };
+                self.auto_mode = if autoplay {
+                    AutoMode::Play
+                } else {
+                    AutoMode::Off
+                };
             }
             if let Some(eq_bands) = config["eq_bands"].as_array() {
                 for (i, val) in eq_bands.iter().enumerate() {

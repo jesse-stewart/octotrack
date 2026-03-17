@@ -25,6 +25,44 @@ fn bytes_per_sample(bit_depth: u16) -> usize {
     }
 }
 
+/// Opens (or creates) a WAV file at `path` and writes an 80-byte placeholder header
+/// (data length = 0).  The file is opened read+write so drop-mode can seek back later.
+/// Returns an error if the file cannot be created or the header cannot be written.
+fn open_wav_file(
+    path: &Path,
+    channels: usize,
+    sample_rate: u32,
+    bit_depth: u16,
+) -> io::Result<File> {
+    let bps = bytes_per_sample(bit_depth);
+    let byte_rate = sample_rate * channels as u32 * bps as u32;
+    let block_align = channels as u16 * bps as u16;
+    let mut f = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)?;
+    // 80-byte placeholder: RIFF/JUNK/fmt/data with data_bytes = 0.
+    f.write_all(b"RIFF")?;
+    f.write_all(&72u32.to_le_bytes())?; // riff_size = 80 - 8
+    f.write_all(b"WAVE")?;
+    f.write_all(b"JUNK")?;
+    f.write_all(&28u32.to_le_bytes())?;
+    f.write_all(&[0u8; 28])?;
+    f.write_all(b"fmt ")?;
+    f.write_all(&16u32.to_le_bytes())?;
+    f.write_all(&1u16.to_le_bytes())?; // PCM
+    f.write_all(&(channels as u16).to_le_bytes())?;
+    f.write_all(&sample_rate.to_le_bytes())?;
+    f.write_all(&byte_rate.to_le_bytes())?;
+    f.write_all(&block_align.to_le_bytes())?;
+    f.write_all(&bit_depth.to_le_bytes())?;
+    f.write_all(b"data")?;
+    f.write_all(&0u32.to_le_bytes())?;
+    Ok(f)
+}
+
 fn log_path() -> PathBuf {
     std::env::temp_dir().join("octotrack.log")
 }
@@ -625,7 +663,15 @@ impl AudioPlayer {
             std::fs::create_dir_all(parent)?;
         }
         *self.channel_levels.lock().unwrap() = vec![-60.0; channel_count as usize];
-        self.start_capture_internal(input_device, channel_count, sample_rate, bit_depth, Some(output_path.to_path_buf()), None, rec_cfg)?;
+        self.start_capture_internal(
+            input_device,
+            channel_count,
+            sample_rate,
+            bit_depth,
+            Some(output_path.to_path_buf()),
+            None,
+            rec_cfg,
+        )?;
         self.capture_is_recording = true;
         Ok(())
     }
@@ -671,13 +717,30 @@ impl AudioPlayer {
 
         if self.capture_is_recording && self.capture_arecord.is_some() {
             // Recording is active — add monitoring output without interrupting capture.
-            return self.enable_monitor_output(output_device, channel_count, sample_rate, bit_depth);
+            return self.enable_monitor_output(
+                output_device,
+                channel_count,
+                sample_rate,
+                bit_depth,
+            );
         }
 
         // No active capture — start a monitoring-only session.
         self.stop_capture()?;
         *self.channel_levels.lock().unwrap() = vec![-60.0; channel_count as usize];
-        self.start_capture_internal(input_device, channel_count, sample_rate, bit_depth, None, Some(output_device), RecordingConfig { max_data_bytes: None, drop_mode: false, min_free_bytes: 0 })
+        self.start_capture_internal(
+            input_device,
+            channel_count,
+            sample_rate,
+            bit_depth,
+            None,
+            Some(output_device),
+            RecordingConfig {
+                max_data_bytes: None,
+                drop_mode: false,
+                min_free_bytes: 0,
+            },
+        )
     }
 
     pub fn stop_monitoring(&mut self) -> io::Result<()> {
@@ -706,7 +769,13 @@ impl AudioPlayer {
     }
 
     /// Start an aplay process and wire its stdin into the running capture thread.
-    fn enable_monitor_output(&mut self, output_device: &str, channel_count: u32, sample_rate: u32, bit_depth: u16) -> io::Result<()> {
+    fn enable_monitor_output(
+        &mut self,
+        output_device: &str,
+        channel_count: u32,
+        sample_rate: u32,
+        bit_depth: u16,
+    ) -> io::Result<()> {
         // Tear down any previous aplay first.
         self.disable_monitor_output()?;
 
@@ -797,7 +866,19 @@ impl AudioPlayer {
         monitor_output: Option<&str>,
         rec_cfg: RecordingConfig,
     ) -> io::Result<()> {
-        let RecordingConfig { max_data_bytes, drop_mode, min_free_bytes } = rec_cfg;
+        let RecordingConfig {
+            max_data_bytes,
+            drop_mode,
+            min_free_bytes,
+        } = rec_cfg;
+        let ch = channel_count as usize;
+
+        // Open WAV file before spawning any processes so failures surface immediately.
+        let wav_file: Option<File> = match &wav_path {
+            None => None,
+            Some(path) => Some(open_wav_file(path, ch, sample_rate, bit_depth)?),
+        };
+
         let mut arecord = Command::new("arecord")
             .arg("-D")
             .arg(input_device)
@@ -869,10 +950,22 @@ impl AudioPlayer {
         let monitor_sink = Arc::clone(&self.capture_monitor_sink);
         let recording_bytes = Arc::clone(&self.capture_recording_bytes);
         *recording_bytes.lock().unwrap() = 0;
-        let ch = channel_count as usize;
 
         let handle = thread::spawn(move || {
-            capture_and_analyse(stdout, wav_path, monitor_sink, ch, sample_rate, bit_depth, levels, max_data_bytes, drop_mode, recording_bytes, min_free_bytes);
+            capture_and_analyse(
+                stdout,
+                wav_file,
+                wav_path,
+                monitor_sink,
+                ch,
+                sample_rate,
+                bit_depth,
+                levels,
+                max_data_bytes,
+                drop_mode,
+                recording_bytes,
+                min_free_bytes,
+            );
         });
 
         self.capture_arecord = Some(arecord);
@@ -924,6 +1017,7 @@ fn free_bytes_on_path(path: &Path) -> Option<u64> {
 #[allow(clippy::too_many_arguments)]
 fn capture_and_analyse<R: Read>(
     mut reader: R,
+    wav_file: Option<File>,
     wav_path: Option<PathBuf>,
     monitor_sink: Arc<Mutex<Option<ChildStdin>>>,
     channels: usize,
@@ -985,7 +1079,7 @@ fn capture_and_analyse<R: Read>(
             f.write_all(&data_bytes.to_le_bytes())?; // dataSize (u64)
             f.write_all(&sample_count.to_le_bytes())?; // sampleCount (u64)
             f.write_all(&0u32.to_le_bytes())?; // tableLength
-            // fmt chunk
+                                               // fmt chunk
             f.write_all(b"fmt ")?;
             f.write_all(&16u32.to_le_bytes())?;
             f.write_all(&1u16.to_le_bytes())?; // PCM
@@ -1008,18 +1102,8 @@ fn capture_and_analyse<R: Read>(
         (m / frame_size as u64) * frame_size as u64 // align to frame
     });
 
-    // Open WAV file if recording — write placeholder header.
-    // Must be read+write so drop mode can read back data during linearization.
-    let mut wav: Option<(File, u64)> = wav_path.as_ref().and_then(|path| {
-        OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(path)
-            .ok()
-            .and_then(|mut f| write_header(&mut f, 0).ok().map(|_| (f, 0u64)))
-    });
+    // WAV file was already opened (and placeholder header written) by the caller.
+    let mut wav: Option<(File, u64)> = wav_file.map(|f| (f, 0u64));
 
     // Circular buffer state for drop mode.
     // `total` = total data bytes written so far (may exceed max in drop mode due to wrapping).
@@ -1124,7 +1208,8 @@ fn capture_and_analyse<R: Read>(
                                             break;
                                         } else if !wrapped {
                                             // Lock current size as the circular buffer cap.
-                                            let aligned = (logical_bytes / frame_size as u64) * frame_size as u64;
+                                            let aligned = (logical_bytes / frame_size as u64)
+                                                * frame_size as u64;
                                             if max_data.is_none_or(|m| aligned < m) {
                                                 log(&format!(
                                                     "capture_and_analyse: disk space low ({} bytes free), capping at {} bytes and looping",
@@ -1165,7 +1250,8 @@ fn capture_and_analyse<R: Read>(
                                     let s = ((buf[off] as i32)
                                         | ((buf[off + 1] as i32) << 8)
                                         | ((buf[off + 2] as i32) << 16))
-                                        << 8 >> 8; // sign-extend
+                                        << 8
+                                        >> 8; // sign-extend
                                     s as f32 / 0x7FFFFF as f32
                                 }
                                 _ => {
@@ -1226,7 +1312,9 @@ fn capture_and_analyse<R: Read>(
                         let to_read = copy_buf.len().min((data_end - pos) as usize);
                         let _ = file.seek(SeekFrom::Start(pos));
                         if let Ok(n) = file.read(&mut copy_buf[..to_read]) {
-                            if n == 0 { break; }
+                            if n == 0 {
+                                break;
+                            }
                             let _ = tmp.write_all(&copy_buf[..n]);
                             pos += n as u64;
                         } else {
@@ -1240,7 +1328,9 @@ fn capture_and_analyse<R: Read>(
                         let to_read = copy_buf.len().min((write_offset - pos) as usize);
                         let _ = file.seek(SeekFrom::Start(pos));
                         if let Ok(n) = file.read(&mut copy_buf[..to_read]) {
-                            if n == 0 { break; }
+                            if n == 0 {
+                                break;
+                            }
                             let _ = tmp.write_all(&copy_buf[..n]);
                             pos += n as u64;
                         } else {
