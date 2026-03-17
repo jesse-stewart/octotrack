@@ -14,7 +14,11 @@ fn log_path() -> PathBuf {
 }
 
 fn log(msg: &str) {
-    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(log_path()) {
+    if let Ok(mut f) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path())
+    {
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -732,7 +736,9 @@ impl AudioPlayer {
             #[cfg(unix)]
             {
                 // Send SIGTERM for graceful shutdown (flush buffers).
-                unsafe { libc::kill(process.id() as libc::pid_t, libc::SIGTERM); }
+                unsafe {
+                    libc::kill(process.id() as libc::pid_t, libc::SIGTERM);
+                }
             }
             #[cfg(not(unix))]
             {

@@ -41,11 +41,11 @@ pub struct App {
     pub recording_start_time: Option<Instant>,
     pub recording_path: Option<PathBuf>,
     pub tracks_dir: String,
-    pub playback_device: String,       // ALSA output device for playback
-    pub playback_channel_count: u32,   // Number of output channels the playback device supports
-    pub rec_input_device: String,      // ALSA input device for recording
-    pub rec_channel_count: u32,        // Number of channels to record
-    pub mon_output_device: String,     // ALSA output device for monitoring (should match playback card)
+    pub playback_device: String,     // ALSA output device for playback
+    pub playback_channel_count: u32, // Number of output channels the playback device supports
+    pub rec_input_device: String,    // ALSA input device for recording
+    pub rec_channel_count: u32,      // Number of channels to record
+    pub mon_output_device: String, // ALSA output device for monitoring (should match playback card)
     pub is_monitoring: bool,
 }
 
