@@ -2,19 +2,16 @@ use octotrack::app::{App, AppResult};
 use octotrack::event::{Event, EventHandler};
 use octotrack::handler::handle_key_events;
 use octotrack::tui::Tui;
-use std::io;
-use std::path::{Path, PathBuf};
-use std::fs;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
 
 /// Finds the tracks directory, checking USB storage first, then falling back to local directory
 fn find_tracks_directory() -> String {
     // Check common USB mount points
-    let usb_mount_points = vec![
-        PathBuf::from("/media"),
-        PathBuf::from("/mnt"),
-    ];
+    let usb_mount_points = vec![PathBuf::from("/media"), PathBuf::from("/mnt")];
 
     for mount_root in usb_mount_points {
         if let Ok(entries) = fs::read_dir(&mount_root) {
@@ -53,7 +50,8 @@ fn has_audio_files(dir: &Path) -> bool {
                 if let Some(ext) = path.extension() {
                     if ext.eq_ignore_ascii_case("mp3")
                         || ext.eq_ignore_ascii_case("wav")
-                        || ext.eq_ignore_ascii_case("flac") {
+                        || ext.eq_ignore_ascii_case("flac")
+                    {
                         return true;
                     }
                 }
@@ -68,7 +66,8 @@ fn has_audio_files(dir: &Path) -> bool {
                             if let Some(ext) = sub_path.extension() {
                                 if ext.eq_ignore_ascii_case("mp3")
                                     || ext.eq_ignore_ascii_case("wav")
-                                    || ext.eq_ignore_ascii_case("flac") {
+                                    || ext.eq_ignore_ascii_case("flac")
+                                {
                                     return true;
                                 }
                             }
@@ -95,7 +94,6 @@ fn main() -> AppResult<()> {
     // Find tracks directory (USB first, then local fallback)
     let tracks_dir = find_tracks_directory();
     app.load_tracks(&tracks_dir).unwrap();
-
 
     // Get initial track metadata
     if !app.track_list.is_empty() {

@@ -1,10 +1,10 @@
-use std::path::PathBuf;
-use std::process::{Command, Child, ChildStdin, Stdio};
-use std::io::{self, Write, Read, Seek, SeekFrom};
 use std::fs::{File, OpenOptions};
-use std::time::Instant;
+use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::path::PathBuf;
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Instant;
 
 const LOG_PATH: &str = "/tmp/octotrack.log";
 
@@ -19,7 +19,10 @@ fn log(msg: &str) {
 }
 
 fn log_stdio() -> Stdio {
-    OpenOptions::new().create(true).append(true).open(LOG_PATH)
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(LOG_PATH)
         .map(Stdio::from)
         .unwrap_or_else(|_| Stdio::null())
 }
@@ -62,8 +65,22 @@ impl AudioPlayer {
         }
     }
 
-    pub fn play(&mut self, track_path: &PathBuf, channel_count: u32, volume: u8, max_volume: u8, eq_bands: &[i8; 10], eq_enabled: bool, playback_device: &str) -> io::Result<()> {
-        log(&format!("play: path={} channels={} device={}", track_path.display(), channel_count, playback_device));
+    pub fn play(
+        &mut self,
+        track_path: &PathBuf,
+        channel_count: u32,
+        volume: u8,
+        max_volume: u8,
+        eq_bands: &[i8; 10],
+        eq_enabled: bool,
+        playback_device: &str,
+    ) -> io::Result<()> {
+        log(&format!(
+            "play: path={} channels={} device={}",
+            track_path.display(),
+            channel_count,
+            playback_device
+        ));
         // Ensure any existing process is stopped before starting a new one
         if let Some(mut process) = self.process.take() {
             process.kill()?;
@@ -97,9 +114,25 @@ impl AudioPlayer {
 
         // Check if track_path is a directory with multiple audio files
         if track_path.is_dir() {
-            self.play_multi_file(track_path, channel_count, volume, max_volume, eq_bands, eq_enabled, playback_device)
+            self.play_multi_file(
+                track_path,
+                channel_count,
+                volume,
+                max_volume,
+                eq_bands,
+                eq_enabled,
+                playback_device,
+            )
         } else {
-            self.play_single_file(track_path, channel_count, volume, max_volume, eq_bands, eq_enabled, playback_device)
+            self.play_single_file(
+                track_path,
+                channel_count,
+                volume,
+                max_volume,
+                eq_bands,
+                eq_enabled,
+                playback_device,
+            )
         }
     }
 
@@ -108,12 +141,13 @@ impl AudioPlayer {
         let _ = std::fs::remove_file(&self.fifo_path);
 
         // Create new FIFO using mkfifo command
-        let status = Command::new("mkfifo")
-            .arg(&self.fifo_path)
-            .status()?;
+        let status = Command::new("mkfifo").arg(&self.fifo_path).status()?;
 
         if !status.success() {
-            return Err(io::Error::new(io::ErrorKind::Other, "Failed to create FIFO"));
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Failed to create FIFO",
+            ));
         }
 
         Ok(())
@@ -132,10 +166,11 @@ impl AudioPlayer {
                 .filter_map(|e| e.ok())
                 .map(|e| e.path())
                 .filter(|p| {
-                    p.extension()
-                        .map_or(false, |ext| ext.eq_ignore_ascii_case("mp3")
+                    p.extension().map_or(false, |ext| {
+                        ext.eq_ignore_ascii_case("mp3")
                             || ext.eq_ignore_ascii_case("wav")
-                            || ext.eq_ignore_ascii_case("flac"))
+                            || ext.eq_ignore_ascii_case("flac")
+                    })
                 })
                 .collect();
 
@@ -165,10 +200,13 @@ impl AudioPlayer {
         }
 
         // Output as raw PCM audio: s16le format, native sample rate
-        cmd.arg("-f").arg("s16le")
-           .arg("-ac").arg(channel_count.to_string())
-           .arg("-")
-           .arg("-loglevel").arg("error");
+        cmd.arg("-f")
+            .arg("s16le")
+            .arg("-ac")
+            .arg(channel_count.to_string())
+            .arg("-")
+            .arg("-loglevel")
+            .arg("error");
 
         let mut child = cmd
             .stdout(Stdio::piped())
@@ -176,7 +214,9 @@ impl AudioPlayer {
             .stdin(Stdio::null())
             .spawn()?;
 
-        let stdout = child.stdout.take()
+        let stdout = child
+            .stdout
+            .take()
             .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Failed to capture stdout"))?;
 
         let levels = Arc::clone(&self.channel_levels);
@@ -204,7 +244,8 @@ impl AudioPlayer {
                                 let offset = (i * channel_count + ch) * 2;
                                 if offset + 1 < n {
                                     // Read s16le sample
-                                    let sample = i16::from_le_bytes([buffer[offset], buffer[offset + 1]]);
+                                    let sample =
+                                        i16::from_le_bytes([buffer[offset], buffer[offset + 1]]);
                                     // Convert to float (-1.0 to 1.0)
                                     let sample_f = sample as f32 / 32768.0;
                                     channel_buffers[ch].push(sample_f);
@@ -217,17 +258,12 @@ impl AudioPlayer {
                         for ch in 0..channel_count {
                             if channel_buffers[ch].len() >= window_samples {
                                 // Calculate RMS
-                                let sum_squares: f32 = channel_buffers[ch].iter()
-                                    .map(|&s| s * s)
-                                    .sum();
+                                let sum_squares: f32 =
+                                    channel_buffers[ch].iter().map(|&s| s * s).sum();
                                 let rms = (sum_squares / channel_buffers[ch].len() as f32).sqrt();
 
                                 // Convert to dB
-                                let db = if rms > 0.0 {
-                                    20.0 * rms.log10()
-                                } else {
-                                    -60.0
-                                };
+                                let db = if rms > 0.0 { 20.0 * rms.log10() } else { -60.0 };
 
                                 current_levels[ch] = db.max(-60.0).min(0.0);
                                 updated = true;
@@ -253,7 +289,16 @@ impl AudioPlayer {
         Ok(())
     }
 
-    fn play_single_file(&mut self, file_path: &PathBuf, channel_count: u32, volume: u8, max_volume: u8, eq_bands: &[i8; 10], eq_enabled: bool, playback_device: &str) -> io::Result<()> {
+    fn play_single_file(
+        &mut self,
+        file_path: &PathBuf,
+        channel_count: u32,
+        volume: u8,
+        max_volume: u8,
+        eq_bands: &[i8; 10],
+        eq_enabled: bool,
+        playback_device: &str,
+    ) -> io::Result<()> {
         // Use mplayer's built-in volume control with slave mode for dynamic control
         let mut cmd = Command::new("mplayer");
         cmd.arg("-slave")
@@ -270,13 +315,15 @@ impl AudioPlayer {
 
         // Add EQ filter if enabled
         if eq_enabled {
-            cmd.arg("-af")
-               .arg(Self::eq_filter_string(eq_bands));
+            cmd.arg("-af").arg(Self::eq_filter_string(eq_bands));
         }
 
         let process = cmd
             .arg("-ao")
-            .arg(format!("alsa:device={}", playback_device.replace("hw:", "plughw=").replace(',', ".")))
+            .arg(format!(
+                "alsa:device={}",
+                playback_device.replace("hw:", "plughw=").replace(',', ".")
+            ))
             .arg(file_path)
             .stdin(Stdio::null())
             .stdout(log_stdio())
@@ -290,36 +337,55 @@ impl AudioPlayer {
         std::thread::sleep(std::time::Duration::from_millis(100));
 
         // Open FIFO for writing
-        self.control_fifo = Some(OpenOptions::new()
-            .write(true)
-            .open(&self.fifo_path)?);
+        self.control_fifo = Some(OpenOptions::new().write(true).open(&self.fifo_path)?);
 
         log("play_single_file: fifo opened, playback started");
         Ok(())
     }
 
-    fn play_multi_file(&mut self, folder_path: &PathBuf, channel_count: u32, volume: u8, max_volume: u8, eq_bands: &[i8; 10], eq_enabled: bool, playback_device: &str) -> io::Result<()> {
+    fn play_multi_file(
+        &mut self,
+        folder_path: &PathBuf,
+        channel_count: u32,
+        volume: u8,
+        max_volume: u8,
+        eq_bands: &[i8; 10],
+        eq_enabled: bool,
+        playback_device: &str,
+    ) -> io::Result<()> {
         // Get all audio files in the directory, sorted
         let mut audio_files: Vec<PathBuf> = std::fs::read_dir(folder_path)?
             .filter_map(|e| e.ok())
             .map(|e| e.path())
             .filter(|p| {
-                p.extension()
-                    .map_or(false, |ext| ext.eq_ignore_ascii_case("mp3")
+                p.extension().map_or(false, |ext| {
+                    ext.eq_ignore_ascii_case("mp3")
                         || ext.eq_ignore_ascii_case("wav")
-                        || ext.eq_ignore_ascii_case("flac"))
+                        || ext.eq_ignore_ascii_case("flac")
+                })
             })
             .collect();
 
         audio_files.sort();
 
         if audio_files.is_empty() {
-            return Err(io::Error::new(io::ErrorKind::NotFound, "No audio files found in directory"));
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "No audio files found in directory",
+            ));
         }
 
         // If only one file, play it directly
         if audio_files.len() == 1 {
-            return self.play_single_file(&audio_files[0], channel_count, volume, max_volume, eq_bands, eq_enabled, playback_device);
+            return self.play_single_file(
+                &audio_files[0],
+                channel_count,
+                volume,
+                max_volume,
+                eq_bands,
+                eq_enabled,
+                playback_device,
+            );
         }
 
         // Build ffmpeg command to merge multiple audio files
@@ -353,8 +419,9 @@ impl AudioPlayer {
             .stderr(Stdio::null())
             .spawn()?;
 
-        let mplayer_stdin = ffmpeg_output.stdout.take()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Failed to capture ffmpeg stdout"))?;
+        let mplayer_stdin = ffmpeg_output.stdout.take().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::Other, "Failed to capture ffmpeg stdout")
+        })?;
 
         let mut mplayer_cmd = Command::new("mplayer");
         mplayer_cmd
@@ -371,13 +438,15 @@ impl AudioPlayer {
             .arg(volume.to_string());
 
         if eq_enabled {
-            mplayer_cmd.arg("-af")
-                       .arg(Self::eq_filter_string(eq_bands));
+            mplayer_cmd.arg("-af").arg(Self::eq_filter_string(eq_bands));
         }
 
         let mplayer_process = mplayer_cmd
             .arg("-ao")
-            .arg(format!("alsa:device={}", playback_device.replace("hw:", "plughw=").replace(',', ".")))
+            .arg(format!(
+                "alsa:device={}",
+                playback_device.replace("hw:", "plughw=").replace(',', ".")
+            ))
             .arg("-")
             .stdin(mplayer_stdin)
             .stdout(Stdio::null())
@@ -391,9 +460,7 @@ impl AudioPlayer {
         std::thread::sleep(std::time::Duration::from_millis(100));
 
         // Open FIFO for writing
-        self.control_fifo = Some(OpenOptions::new()
-            .write(true)
-            .open(&self.fifo_path)?);
+        self.control_fifo = Some(OpenOptions::new().write(true).open(&self.fifo_path)?);
 
         Ok(())
     }
@@ -407,7 +474,11 @@ impl AudioPlayer {
     pub fn update_eq_bands(&mut self, bands: &[i8; 10]) -> io::Result<()> {
         if let Some(fifo) = &mut self.control_fifo {
             let values: Vec<String> = bands.iter().map(|b| b.to_string()).collect();
-            writeln!(fifo, "pausing_keep_force af_cmdline equalizer {}", values.join(":"))?;
+            writeln!(
+                fifo,
+                "pausing_keep_force af_cmdline equalizer {}",
+                values.join(":")
+            )?;
             fifo.flush()?;
         }
         Ok(())
@@ -420,7 +491,11 @@ impl AudioPlayer {
             fifo.flush()?;
 
             if enabled {
-                writeln!(fifo, "pausing_keep_force af_add {}", Self::eq_filter_string(bands))?;
+                writeln!(
+                    fifo,
+                    "pausing_keep_force af_add {}",
+                    Self::eq_filter_string(bands)
+                )?;
                 fifo.flush()?;
             }
         }
@@ -447,7 +522,6 @@ impl AudioPlayer {
         Ok(())
     }
 
-
     pub fn is_running(&mut self) -> bool {
         if let Some(process) = &mut self.process {
             match process.try_wait() {
@@ -460,8 +534,8 @@ impl AudioPlayer {
                     }
                     false
                 }
-                Ok(None) => true,     // Process is still running
-                Err(_) => false,      // Error in checking, assume not running
+                Ok(None) => true, // Process is still running
+                Err(_) => false,  // Error in checking, assume not running
             }
         } else {
             false
@@ -488,8 +562,16 @@ impl AudioPlayer {
         }
     }
 
-    pub fn start_recording(&mut self, output_path: &PathBuf, input_device: &str, channel_count: u32) -> io::Result<()> {
-        log(&format!("start_recording: device={} channels={} path={:?}", input_device, channel_count, output_path));
+    pub fn start_recording(
+        &mut self,
+        output_path: &PathBuf,
+        input_device: &str,
+        channel_count: u32,
+    ) -> io::Result<()> {
+        log(&format!(
+            "start_recording: device={} channels={} path={:?}",
+            input_device, channel_count, output_path
+        ));
         self.stop_capture()?;
 
         if let Some(parent) = output_path.parent() {
@@ -508,18 +590,35 @@ impl AudioPlayer {
     }
 
     pub fn is_recording(&mut self) -> bool {
-        if !self.capture_is_recording { return false; }
+        if !self.capture_is_recording {
+            return false;
+        }
         match &mut self.capture_arecord {
-            None => { self.capture_is_recording = false; false }
+            None => {
+                self.capture_is_recording = false;
+                false
+            }
             Some(p) => match p.try_wait() {
                 Ok(None) => true,
-                _ => { self.capture_arecord = None; self.capture_is_recording = false; false }
-            }
+                _ => {
+                    self.capture_arecord = None;
+                    self.capture_is_recording = false;
+                    false
+                }
+            },
         }
     }
 
-    pub fn start_monitoring(&mut self, input_device: &str, output_device: &str, channel_count: u32) -> io::Result<()> {
-        log(&format!("start_monitoring: in={} out={} channels={}", input_device, output_device, channel_count));
+    pub fn start_monitoring(
+        &mut self,
+        input_device: &str,
+        output_device: &str,
+        channel_count: u32,
+    ) -> io::Result<()> {
+        log(&format!(
+            "start_monitoring: in={} out={} channels={}",
+            input_device, output_device, channel_count
+        ));
 
         if self.capture_is_recording && self.capture_arecord.is_some() {
             // Recording is active — add monitoring output without interrupting capture.
@@ -548,10 +647,12 @@ impl AudioPlayer {
                 Ok(None) => true,
                 _ => {
                     self.capture_aplay = None;
-                    if let Ok(mut sink) = self.capture_monitor_sink.lock() { *sink = None; }
+                    if let Ok(mut sink) = self.capture_monitor_sink.lock() {
+                        *sink = None;
+                    }
                     false
                 }
-            }
+            },
         }
     }
 
@@ -561,18 +662,28 @@ impl AudioPlayer {
         self.disable_monitor_output()?;
 
         let mut aplay = Command::new("aplay")
-            .arg("-D").arg(output_device)
-            .arg("-c").arg(channel_count.to_string())
-            .arg("-r").arg("192000")
-            .arg("-f").arg("S32_LE")
-            .arg("-t").arg("raw")
+            .arg("-D")
+            .arg(output_device)
+            .arg("-c")
+            .arg(channel_count.to_string())
+            .arg("-r")
+            .arg("192000")
+            .arg("-f")
+            .arg("S32_LE")
+            .arg("-t")
+            .arg("raw")
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(log_stdio())
             .spawn()
-            .map_err(|e| { log(&format!("aplay spawn failed: {}", e)); e })?;
+            .map_err(|e| {
+                log(&format!("aplay spawn failed: {}", e));
+                e
+            })?;
 
-        let stdin = aplay.stdin.take()
+        let stdin = aplay
+            .stdin
+            .take()
             .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "aplay stdin missing"))?;
 
         *self.capture_monitor_sink.lock().unwrap() = Some(stdin);
@@ -604,8 +715,10 @@ impl AudioPlayer {
         if let Some(process) = self.capture_arecord.take() {
             let pid = process.id();
             let _ = Command::new("kill")
-                .arg("-TERM").arg(pid.to_string())
-                .stdout(Stdio::null()).stderr(Stdio::null())
+                .arg("-TERM")
+                .arg(pid.to_string())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
                 .status();
             let mut p = process;
             let _ = p.wait();
@@ -621,38 +734,62 @@ impl AudioPlayer {
     /// Spawn arecord and a processing thread.
     /// `wav_path` — Some to write a WAV recording.
     /// `monitor_output` — Some(device) to also start aplay and route audio to it.
-    fn start_capture_internal(&mut self, input_device: &str, channel_count: u32, wav_path: Option<PathBuf>, monitor_output: Option<&str>) -> io::Result<()> {
+    fn start_capture_internal(
+        &mut self,
+        input_device: &str,
+        channel_count: u32,
+        wav_path: Option<PathBuf>,
+        monitor_output: Option<&str>,
+    ) -> io::Result<()> {
         let mut arecord = Command::new("arecord")
-            .arg("-D").arg(input_device)
-            .arg("-c").arg(channel_count.to_string())
-            .arg("-r").arg("192000")
-            .arg("-f").arg("S32_LE")
-            .arg("-t").arg("raw")
+            .arg("-D")
+            .arg(input_device)
+            .arg("-c")
+            .arg(channel_count.to_string())
+            .arg("-r")
+            .arg("192000")
+            .arg("-f")
+            .arg("S32_LE")
+            .arg("-t")
+            .arg("raw")
             .arg("--buffer-size=65536")
             .stdout(Stdio::piped())
             .stderr(log_stdio())
             .stdin(Stdio::null())
             .spawn()
-            .map_err(|e| { log(&format!("arecord spawn failed: {}", e)); e })?;
+            .map_err(|e| {
+                log(&format!("arecord spawn failed: {}", e));
+                e
+            })?;
 
         log("arecord spawned");
 
-        let stdout = arecord.stdout.take()
+        let stdout = arecord
+            .stdout
+            .take()
             .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "arecord stdout missing"))?;
 
         if let Some(output_device) = monitor_output {
             let mut aplay = match Command::new("aplay")
-                .arg("-D").arg(output_device)
-                .arg("-c").arg(channel_count.to_string())
-                .arg("-r").arg("192000")
-                .arg("-f").arg("S32_LE")
-                .arg("-t").arg("raw")
+                .arg("-D")
+                .arg(output_device)
+                .arg("-c")
+                .arg(channel_count.to_string())
+                .arg("-r")
+                .arg("192000")
+                .arg("-f")
+                .arg("S32_LE")
+                .arg("-t")
+                .arg("raw")
                 .stdin(Stdio::piped())
                 .stdout(Stdio::null())
                 .stderr(log_stdio())
                 .spawn()
             {
-                Ok(p) => { log("aplay spawned"); p }
+                Ok(p) => {
+                    log("aplay spawned");
+                    p
+                }
                 Err(e) => {
                     log(&format!("aplay spawn failed: {}", e));
                     let _ = arecord.kill();
@@ -661,7 +798,9 @@ impl AudioPlayer {
                 }
             };
 
-            let stdin = aplay.stdin.take()
+            let stdin = aplay
+                .stdin
+                .take()
                 .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "aplay stdin missing"))?;
             *self.capture_monitor_sink.lock().unwrap() = Some(stdin);
             self.capture_aplay = Some(aplay);
@@ -698,11 +837,11 @@ impl AudioPlayer {
         };
 
         // Apply volume adjustment to each channel
-        raw_levels.iter()
+        raw_levels
+            .iter()
             .map(|&level| (level + volume_db).max(-60.0).min(0.0))
             .collect()
     }
-
 }
 
 /// Reads raw S32_LE PCM from `reader` (arecord stdout).
@@ -743,9 +882,9 @@ fn capture_and_analyse<R: Read>(
 
     // Open WAV file if recording.
     let mut wav: Option<(File, u32)> = wav_path.as_ref().and_then(|path| {
-        File::create(path).ok().and_then(|mut f| {
-            write_wav_header(&mut f, 0).ok().map(|_| (f, 0u32))
-        })
+        File::create(path)
+            .ok()
+            .and_then(|mut f| write_wav_header(&mut f, 0).ok().map(|_| (f, 0u32)))
     });
 
     let window_frames: usize = (SAMPLE_RATE / 10) as usize; // 100 ms
@@ -760,7 +899,9 @@ fn capture_and_analyse<R: Read>(
             Ok(n) => {
                 // Write to WAV file.
                 if let Some((ref mut file, ref mut total)) = wav {
-                    if file.write_all(&buf[..n]).is_ok() { *total += n as u32; }
+                    if file.write_all(&buf[..n]).is_ok() {
+                        *total += n as u32;
+                    }
                 }
                 // Write to monitoring output; clear on broken pipe.
                 {
@@ -777,7 +918,12 @@ fn capture_and_analyse<R: Read>(
                     for ch in 0..channels {
                         let off = i * frame_size + ch * BYTES_PER_SAMPLE;
                         if off + 3 < n {
-                            let s = i32::from_le_bytes([buf[off], buf[off+1], buf[off+2], buf[off+3]]);
+                            let s = i32::from_le_bytes([
+                                buf[off],
+                                buf[off + 1],
+                                buf[off + 2],
+                                buf[off + 3],
+                            ]);
                             ch_bufs[ch].push(s as f32 / i32::MAX as f32);
                         }
                     }
@@ -786,7 +932,8 @@ fn capture_and_analyse<R: Read>(
                 for ch in 0..channels {
                     if ch_bufs[ch].len() >= window_frames {
                         let rms = (ch_bufs[ch].iter().map(|&s| s * s).sum::<f32>()
-                            / ch_bufs[ch].len() as f32).sqrt();
+                            / ch_bufs[ch].len() as f32)
+                            .sqrt();
                         let db = if rms > 0.0 { 20.0 * rms.log10() } else { -60.0 };
                         cur_levels[ch] = db.max(-60.0).min(0.0);
                         ch_bufs[ch].clear();
@@ -794,7 +941,9 @@ fn capture_and_analyse<R: Read>(
                     }
                 }
                 if updated {
-                    if let Ok(mut g) = levels.lock() { *g = cur_levels.clone(); }
+                    if let Ok(mut g) = levels.lock() {
+                        *g = cur_levels.clone();
+                    }
                 }
             }
             Err(_) => break,
@@ -804,7 +953,10 @@ fn capture_and_analyse<R: Read>(
     // Finalise WAV header.
     if let Some((mut file, total_bytes)) = wav {
         let _ = write_wav_header(&mut file, total_bytes);
-        log(&format!("capture_and_analyse: {} bytes written to WAV", total_bytes));
+        log(&format!(
+            "capture_and_analyse: {} bytes written to WAV",
+            total_bytes
+        ));
     }
 }
 

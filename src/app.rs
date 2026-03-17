@@ -1,7 +1,7 @@
-use std::{error, path::PathBuf, process::Command, fs, time::Instant};
-use walkdir::WalkDir;
 use crate::audio::AudioPlayer;
 use serde_json::{json, Value};
+use std::{error, fs, path::PathBuf, process::Command, time::Instant};
+use walkdir::WalkDir;
 
 /// Application result type.
 pub type AppResult<T> = std::result::Result<T, Box<dyn error::Error>>;
@@ -26,17 +26,17 @@ pub struct App {
     pub comment: String,
     pub track_channel_count: u32,
     pub loop_mode: LoopMode,
-    pub volume: u8, // Master volume 0-100
-    pub max_volume: u8, // Maximum volume level (softvol-max for mplayer)
-    pub autoplay: bool, // Auto-play on startup
+    pub volume: u8,                    // Master volume 0-100
+    pub max_volume: u8,                // Maximum volume level (softvol-max for mplayer)
+    pub autoplay: bool,                // Auto-play on startup
     pub current_position: Option<f32>, // Current playback position in seconds
-    pub track_duration: Option<f32>, // Total track duration in seconds
-    pub channel_levels: Vec<f32>, // Per-channel RMS levels in dB
-    pub show_quit_dialog: bool, // Show quit confirmation dialog
-    pub eq_bands: [i8; 10], // 10-band EQ gain values (-12 to +12 dB)
-    pub eq_enabled: bool, // EQ bypass toggle
-    pub show_eq: bool, // Show EQ overlay
-    pub eq_selected_band: usize, // Currently selected EQ band (0-9)
+    pub track_duration: Option<f32>,   // Total track duration in seconds
+    pub channel_levels: Vec<f32>,      // Per-channel RMS levels in dB
+    pub show_quit_dialog: bool,        // Show quit confirmation dialog
+    pub eq_bands: [i8; 10],            // 10-band EQ gain values (-12 to +12 dB)
+    pub eq_enabled: bool,              // EQ bypass toggle
+    pub show_eq: bool,                 // Show EQ overlay
+    pub eq_selected_band: usize,       // Currently selected EQ band (0-9)
     pub is_recording: bool,
     pub recording_start_time: Option<Instant>,
     pub recording_path: Option<PathBuf>,
@@ -61,14 +61,14 @@ impl Default for App {
             comment: String::new(),
             track_channel_count: 0,
             loop_mode: LoopMode::LoopSingle,
-            volume: 100, // Start at 100%
+            volume: 100,     // Start at 100%
             max_volume: 100, // 100% of original audio level
             autoplay: false, // Disabled by default
             current_position: None,
             track_duration: None,
             channel_levels: vec![],
             show_quit_dialog: false, // Dialog hidden by default
-            eq_bands: [0; 10], // Flat EQ by default
+            eq_bands: [0; 10],       // Flat EQ by default
             eq_enabled: true,
             show_eq: false,
             eq_selected_band: 0,
@@ -159,7 +159,9 @@ impl App {
     pub fn toggle_eq_enabled(&mut self) {
         self.eq_enabled = !self.eq_enabled;
         if self.is_playing {
-            let _ = self.audio_player.set_eq_enabled(&self.eq_bands, self.eq_enabled);
+            let _ = self
+                .audio_player
+                .set_eq_enabled(&self.eq_bands, self.eq_enabled);
         }
         let _ = self.save_config();
     }
@@ -197,7 +199,8 @@ impl App {
         for entry in WalkDir::new(folder_path)
             .min_depth(1)
             .max_depth(1)
-            .sort_by(|a, b| a.file_name().cmp(b.file_name())) // Sort entries alphabetically by file name
+            .sort_by(|a, b| a.file_name().cmp(b.file_name()))
+        // Sort entries alphabetically by file name
         {
             let entry = match entry {
                 Ok(e) => e,
@@ -207,7 +210,8 @@ impl App {
             };
 
             let path = entry.path();
-            let is_hidden = path.file_name()
+            let is_hidden = path
+                .file_name()
                 .map(|name| name.to_string_lossy().starts_with('.'))
                 .unwrap_or(true);
 
@@ -220,14 +224,13 @@ impl App {
                 let has_audio_files = std::fs::read_dir(path)
                     .ok()
                     .map(|entries| {
-                        entries
-                            .filter_map(|e| e.ok())
-                            .any(|e| {
-                                e.path().extension()
-                                    .map_or(false, |ext| ext.eq_ignore_ascii_case("mp3")
-                                        || ext.eq_ignore_ascii_case("wav")
-                                        || ext.eq_ignore_ascii_case("flac"))
+                        entries.filter_map(|e| e.ok()).any(|e| {
+                            e.path().extension().map_or(false, |ext| {
+                                ext.eq_ignore_ascii_case("mp3")
+                                    || ext.eq_ignore_ascii_case("wav")
+                                    || ext.eq_ignore_ascii_case("flac")
                             })
+                        })
                     })
                     .unwrap_or(false);
 
@@ -235,10 +238,11 @@ impl App {
                     tracks.push(path.to_path_buf());
                 }
             } else if path.is_file() {
-                let valid_extension = path.extension()
-                    .map_or(false, |ext| ext.eq_ignore_ascii_case("mp3")
+                let valid_extension = path.extension().map_or(false, |ext| {
+                    ext.eq_ignore_ascii_case("mp3")
                         || ext.eq_ignore_ascii_case("wav")
-                        || ext.eq_ignore_ascii_case("flac"));
+                        || ext.eq_ignore_ascii_case("flac")
+                });
 
                 if valid_extension {
                     tracks.push(path.to_path_buf());
@@ -252,15 +256,23 @@ impl App {
         Ok(())
     }
 
-
-
     pub fn play(&mut self) {
         if self.track_list.get(self.current_track_index).is_some() && !self.is_playing {
             if self.is_monitoring {
                 let _ = self.stop_monitoring();
             }
             let current_track = self.track_list[self.current_track_index].clone();
-            self.audio_player.play(&current_track, self.track_channel_count, self.volume, self.max_volume, &self.eq_bands, self.eq_enabled, &self.playback_device).unwrap();
+            self.audio_player
+                .play(
+                    &current_track,
+                    self.track_channel_count,
+                    self.volume,
+                    self.max_volume,
+                    &self.eq_bands,
+                    self.eq_enabled,
+                    &self.playback_device,
+                )
+                .unwrap();
             self.is_playing = true;
         }
     }
@@ -276,15 +288,20 @@ impl App {
                 .filter_map(|e| e.ok())
                 .map(|e| e.path())
                 .filter(|p| {
-                    p.extension()
-                        .map_or(false, |ext| ext.eq_ignore_ascii_case("mp3")
+                    p.extension().map_or(false, |ext| {
+                        ext.eq_ignore_ascii_case("mp3")
                             || ext.eq_ignore_ascii_case("wav")
-                            || ext.eq_ignore_ascii_case("flac"))
+                            || ext.eq_ignore_ascii_case("flac")
+                    })
                 })
                 .collect();
 
             if audio_files.is_empty() {
-                self.track_title = track_path.file_name().unwrap().to_string_lossy().to_string();
+                self.track_title = track_path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_string();
                 self.track_artist = String::new();
                 self.comment = "Multi-file track".to_string();
                 self.track_channel_count = 8; // Default for multi-file tracks
@@ -308,27 +325,36 @@ impl App {
             let meta_info: std::borrow::Cow<str> = String::from_utf8_lossy(&meta_info);
             let meta_info: serde_json::Value = serde_json::from_str(&meta_info).unwrap();
 
-            let channels_per_file = meta_info["streams"][0]["channels"].as_u64().unwrap_or(1) as u32;
+            let channels_per_file =
+                meta_info["streams"][0]["channels"].as_u64().unwrap_or(1) as u32;
             let total_channels = channels_per_file * audio_files.len() as u32;
             self.track_channel_count = total_channels;
 
-            let fallback_title = track_path.file_name().unwrap().to_string_lossy().to_string();
+            let fallback_title = track_path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .to_string();
 
             // Try both uppercase and lowercase tag names (different formats use different cases)
-            let title = meta_info["format"]["tags"]["TITLE"].as_str()
+            let title = meta_info["format"]["tags"]["TITLE"]
+                .as_str()
                 .or_else(|| meta_info["format"]["tags"]["title"].as_str())
                 .unwrap_or(&fallback_title);
-            let artist = meta_info["format"]["tags"]["ARTIST"].as_str()
+            let artist = meta_info["format"]["tags"]["ARTIST"]
+                .as_str()
                 .or_else(|| meta_info["format"]["tags"]["artist"].as_str())
                 .unwrap_or("");
-            let comment = meta_info["format"]["tags"]["comment"].as_str()
+            let comment = meta_info["format"]["tags"]["comment"]
+                .as_str()
                 .or_else(|| meta_info["format"]["tags"]["COMMENT"].as_str())
                 .unwrap_or("");
 
             self.track_title = title.to_string();
             self.track_artist = artist.to_string();
             self.comment = comment.to_string();
-            self.track_duration = meta_info["format"]["duration"].as_str()
+            self.track_duration = meta_info["format"]["duration"]
+                .as_str()
                 .and_then(|d| d.parse::<f32>().ok());
         } else {
             let meta_info = Command::new("ffprobe")
@@ -353,21 +379,26 @@ impl App {
                 .to_string();
 
             // Try both uppercase and lowercase tag names (different formats use different cases)
-            let title = meta_info["format"]["tags"]["TITLE"].as_str()
+            let title = meta_info["format"]["tags"]["TITLE"]
+                .as_str()
                 .or_else(|| meta_info["format"]["tags"]["title"].as_str())
                 .unwrap_or(&fallback_title);
-            let artist = meta_info["format"]["tags"]["ARTIST"].as_str()
+            let artist = meta_info["format"]["tags"]["ARTIST"]
+                .as_str()
                 .or_else(|| meta_info["format"]["tags"]["artist"].as_str())
                 .unwrap_or("");
-            let comment = meta_info["format"]["tags"]["comment"].as_str()
+            let comment = meta_info["format"]["tags"]["comment"]
+                .as_str()
                 .or_else(|| meta_info["format"]["tags"]["COMMENT"].as_str())
                 .unwrap_or("");
 
             self.track_title = title.to_string();
             self.track_artist = artist.to_string();
             self.comment = comment.to_string();
-            self.track_channel_count = meta_info["streams"][0]["channels"].as_u64().unwrap_or(0) as u32;
-            self.track_duration = meta_info["format"]["duration"].as_str()
+            self.track_channel_count =
+                meta_info["streams"][0]["channels"].as_u64().unwrap_or(0) as u32;
+            self.track_duration = meta_info["format"]["duration"]
+                .as_str()
                 .and_then(|d| d.parse::<f32>().ok());
         }
 
@@ -403,15 +434,21 @@ impl App {
 
         let input_device = self.rec_input_device.clone();
         let channel_count = self.rec_channel_count;
-        self.audio_player.start_recording(&output_path, &input_device, channel_count)?;
+        self.audio_player
+            .start_recording(&output_path, &input_device, channel_count)?;
         // If monitoring was active, re-enable it on the new capture session.
         if self.is_monitoring {
             let output_device = self.mon_output_device.clone();
-            let _ = self.audio_player.start_monitoring(&input_device, &output_device, channel_count);
+            let _ =
+                self.audio_player
+                    .start_monitoring(&input_device, &output_device, channel_count);
         }
         self.is_recording = true;
         self.recording_start_time = Some(Instant::now());
-        let display_name = filename.strip_suffix(".wav").unwrap_or(&filename).to_string();
+        let display_name = filename
+            .strip_suffix(".wav")
+            .unwrap_or(&filename)
+            .to_string();
         self.track_title = format!("{}/{}", self.tracks_dir, display_name);
         self.recording_path = Some(output_path);
         Ok(())
@@ -426,7 +463,9 @@ impl App {
             let input_device = self.rec_input_device.clone();
             let output_device = self.mon_output_device.clone();
             let channel_count = self.rec_channel_count;
-            let _ = self.audio_player.start_monitoring(&input_device, &output_device, channel_count);
+            let _ =
+                self.audio_player
+                    .start_monitoring(&input_device, &output_device, channel_count);
         }
 
         let saved_path = self.recording_path.take();
@@ -439,9 +478,11 @@ impl App {
         if let Some(ref rec_path) = saved_path {
             // Canonicalise both sides of the comparison so relative vs absolute doesn't matter
             let canon_rec = rec_path.canonicalize().unwrap_or_else(|_| rec_path.clone());
-            if let Some(idx) = self.track_list.iter().position(|p| {
-                p.canonicalize().unwrap_or_else(|_| p.clone()) == canon_rec
-            }) {
+            if let Some(idx) = self
+                .track_list
+                .iter()
+                .position(|p| p.canonicalize().unwrap_or_else(|_| p.clone()) == canon_rec)
+            {
                 self.current_track_index = idx;
                 self.get_metadata();
             }
@@ -470,9 +511,11 @@ impl App {
             let _ = self.load_tracks(&tracks_dir);
             if let Some(ref rec_path) = saved_path {
                 let canon_rec = rec_path.canonicalize().unwrap_or_else(|_| rec_path.clone());
-                if let Some(idx) = self.track_list.iter().position(|p| {
-                    p.canonicalize().unwrap_or_else(|_| p.clone()) == canon_rec
-                }) {
+                if let Some(idx) = self
+                    .track_list
+                    .iter()
+                    .position(|p| p.canonicalize().unwrap_or_else(|_| p.clone()) == canon_rec)
+                {
                     self.current_track_index = idx;
                     self.get_metadata();
                 }
@@ -521,7 +564,8 @@ impl App {
         let output_device = self.mon_output_device.clone();
         let channel_count = self.rec_channel_count;
         self.channel_levels = vec![-60.0; channel_count as usize];
-        self.audio_player.start_monitoring(&input_device, &output_device, channel_count)?;
+        self.audio_player
+            .start_monitoring(&input_device, &output_device, channel_count)?;
         self.is_monitoring = true;
         Ok(())
     }
@@ -545,7 +589,10 @@ impl App {
 
     fn get_config_path() -> PathBuf {
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        PathBuf::from(home).join(".config").join("octotrack").join("config.json")
+        PathBuf::from(home)
+            .join(".config")
+            .join("octotrack")
+            .join("config.json")
     }
 
     pub fn load_config(&mut self) -> AppResult<()> {
@@ -618,6 +665,4 @@ impl App {
 
         Ok(())
     }
-
 }
-

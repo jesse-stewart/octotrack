@@ -55,9 +55,7 @@ pub fn handle_key_events(key_event: KeyEvent, app: &mut App) -> AppResult<()> {
                 app.show_quit_dialog = true;
             }
         }
-        KeyCode::Char(' ') => {
-            app.play()
-        }
+        KeyCode::Char(' ') => app.play(),
         KeyCode::Char('s') => {
             app.stop()?;
         }
