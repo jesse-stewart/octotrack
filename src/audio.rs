@@ -62,7 +62,8 @@ impl AudioPlayer {
         }
     }
 
-    pub fn play(&mut self, track_path: &PathBuf, channel_count: u32, volume: u8, max_volume: u8, eq_bands: &[i8; 10], eq_enabled: bool) -> io::Result<()> {
+    pub fn play(&mut self, track_path: &PathBuf, channel_count: u32, volume: u8, max_volume: u8, eq_bands: &[i8; 10], eq_enabled: bool, playback_device: &str) -> io::Result<()> {
+        log(&format!("play: path={} channels={} device={}", track_path.display(), channel_count, playback_device));
         // Ensure any existing process is stopped before starting a new one
         if let Some(mut process) = self.process.take() {
             process.kill()?;
@@ -96,9 +97,9 @@ impl AudioPlayer {
 
         // Check if track_path is a directory with multiple audio files
         if track_path.is_dir() {
-            self.play_multi_file(track_path, channel_count, volume, max_volume, eq_bands, eq_enabled)
+            self.play_multi_file(track_path, channel_count, volume, max_volume, eq_bands, eq_enabled, playback_device)
         } else {
-            self.play_single_file(track_path, channel_count, volume, max_volume, eq_bands, eq_enabled)
+            self.play_single_file(track_path, channel_count, volume, max_volume, eq_bands, eq_enabled, playback_device)
         }
     }
 
@@ -252,7 +253,7 @@ impl AudioPlayer {
         Ok(())
     }
 
-    fn play_single_file(&mut self, file_path: &PathBuf, channel_count: u32, volume: u8, max_volume: u8, eq_bands: &[i8; 10], eq_enabled: bool) -> io::Result<()> {
+    fn play_single_file(&mut self, file_path: &PathBuf, channel_count: u32, volume: u8, max_volume: u8, eq_bands: &[i8; 10], eq_enabled: bool, playback_device: &str) -> io::Result<()> {
         // Use mplayer's built-in volume control with slave mode for dynamic control
         let mut cmd = Command::new("mplayer");
         cmd.arg("-slave")
@@ -275,14 +276,15 @@ impl AudioPlayer {
 
         let process = cmd
             .arg("-ao")
-            .arg("alsa:device=hw=0.0")
+            .arg(format!("alsa:device={}", playback_device.replace("hw:", "plughw=").replace(',', ".")))
             .arg(file_path)
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stdout(log_stdio())
+            .stderr(log_stdio())
             .spawn()?;
 
         self.process = Some(process);
+        log("play_single_file: mplayer spawned");
 
         // Give mplayer a moment to open the FIFO
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -292,10 +294,11 @@ impl AudioPlayer {
             .write(true)
             .open(&self.fifo_path)?);
 
+        log("play_single_file: fifo opened, playback started");
         Ok(())
     }
 
-    fn play_multi_file(&mut self, folder_path: &PathBuf, channel_count: u32, volume: u8, max_volume: u8, eq_bands: &[i8; 10], eq_enabled: bool) -> io::Result<()> {
+    fn play_multi_file(&mut self, folder_path: &PathBuf, channel_count: u32, volume: u8, max_volume: u8, eq_bands: &[i8; 10], eq_enabled: bool, playback_device: &str) -> io::Result<()> {
         // Get all audio files in the directory, sorted
         let mut audio_files: Vec<PathBuf> = std::fs::read_dir(folder_path)?
             .filter_map(|e| e.ok())
@@ -316,7 +319,7 @@ impl AudioPlayer {
 
         // If only one file, play it directly
         if audio_files.len() == 1 {
-            return self.play_single_file(&audio_files[0], channel_count, volume, max_volume, eq_bands, eq_enabled);
+            return self.play_single_file(&audio_files[0], channel_count, volume, max_volume, eq_bands, eq_enabled, playback_device);
         }
 
         // Build ffmpeg command to merge multiple audio files
@@ -374,7 +377,7 @@ impl AudioPlayer {
 
         let mplayer_process = mplayer_cmd
             .arg("-ao")
-            .arg("alsa:device=hw=0.0")
+            .arg(format!("alsa:device={}", playback_device.replace("hw:", "plughw=").replace(',', ".")))
             .arg("-")
             .stdin(mplayer_stdin)
             .stdout(Stdio::null())
@@ -448,7 +451,8 @@ impl AudioPlayer {
     pub fn is_running(&mut self) -> bool {
         if let Some(process) = &mut self.process {
             match process.try_wait() {
-                Ok(Some(_)) => {
+                Ok(Some(status)) => {
+                    log(&format!("is_running: process exited with {}", status));
                     // Clean up ffmpeg process if mplayer has exited
                     if let Some(mut ffmpeg_process) = self.ffmpeg_process.take() {
                         let _ = ffmpeg_process.kill();

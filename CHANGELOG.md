@@ -1,0 +1,39 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
+
+## [0.2.0] - 2026-03-17
+
+### Added
+- Multi-channel recording via ALSA with configurable input device
+- Real-time input monitoring with level metering
+- Configurable audio devices for playback, recording, and monitoring (`playback_device`, `rec_input_device`, `mon_output_device`)
+- Configurable recording channel count (`rec_channel_count`)
+- Automatic format conversion for playback compatibility across different audio interfaces
+- VU meters for recording and monitoring input levels
+- CONTRIBUTING.md, CODE_OF_CONDUCT.md, issue and PR templates
+- CI pipeline (GitHub Actions for build and lint)
+- GPL v3 license
+
+### Changed
+- Playback device is now configurable via config instead of hardcoded
+- Metadata loading optimized to reduce input lag when switching tracks
+
+## [0.1.0] - 2026-03-10
+
+### Added
+- Multi-channel audio playback (8+ channels) via mplayer
+- Real-time per-channel level metering
+- Support for single audio files and multi-file tracks (folders merged into multi-channel stream)
+- Loop modes (Off, Single, All)
+- Volume control with configurable max volume ceiling
+- 10-band graphic equalizer with bypass
+- Autoplay mode
+- Track navigation and metadata display (artist, title from file tags)
+- Progress indicator with time display
+- USB storage auto-detection for tracks
+- Persistent configuration (`~/.config/octotrack/config.json`)
+- merge_tracks.sh script for combining mono/stereo files into multi-channel tracks
+- systemd service support for running on boot

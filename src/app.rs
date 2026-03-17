@@ -41,6 +41,7 @@ pub struct App {
     pub recording_start_time: Option<Instant>,
     pub recording_path: Option<PathBuf>,
     pub tracks_dir: String,
+    pub playback_device: String,   // ALSA output device for playback
     pub rec_input_device: String,  // ALSA input device for recording
     pub rec_channel_count: u32,    // Number of channels to record
     pub mon_output_device: String, // ALSA output device for monitoring (should match playback card)
@@ -75,6 +76,7 @@ impl Default for App {
             recording_start_time: None,
             recording_path: None,
             tracks_dir: "tracks".to_string(),
+            playback_device: "hw:0,0".to_string(),
             rec_input_device: "hw:0,0".to_string(),
             rec_channel_count: 8,
             mon_output_device: "hw:0,0".to_string(),
@@ -258,7 +260,7 @@ impl App {
                 let _ = self.stop_monitoring();
             }
             let current_track = self.track_list[self.current_track_index].clone();
-            self.audio_player.play(&current_track, self.track_channel_count, self.volume, self.max_volume, &self.eq_bands, self.eq_enabled).unwrap();
+            self.audio_player.play(&current_track, self.track_channel_count, self.volume, self.max_volume, &self.eq_bands, self.eq_enabled, &self.playback_device).unwrap();
             self.is_playing = true;
         }
     }
@@ -289,26 +291,8 @@ impl App {
                 return;
             }
 
-            // Use first file for metadata, but calculate total channel count
+            // Use first file for metadata; infer total channels from first file's channels * file count
             let first_file = audio_files[0].clone();
-            let total_channels: u32 = audio_files.iter()
-                .filter_map(|file| {
-                    let meta = Command::new("ffprobe")
-                        .arg("-v")
-                        .arg("error")
-                        .arg("-show_streams")
-                        .arg("-of")
-                        .arg("json")
-                        .arg(file)
-                        .output()
-                        .ok()?;
-                    let meta_str = String::from_utf8_lossy(&meta.stdout);
-                    let meta_json: serde_json::Value = serde_json::from_str(&meta_str).ok()?;
-                    meta_json["streams"][0]["channels"].as_u64().map(|c| c as u32)
-                })
-                .sum();
-
-            self.track_channel_count = total_channels;
 
             let meta_info = Command::new("ffprobe")
                 .arg("-v")
@@ -323,6 +307,10 @@ impl App {
                 .stdout;
             let meta_info: std::borrow::Cow<str> = String::from_utf8_lossy(&meta_info);
             let meta_info: serde_json::Value = serde_json::from_str(&meta_info).unwrap();
+
+            let channels_per_file = meta_info["streams"][0]["channels"].as_u64().unwrap_or(1) as u32;
+            let total_channels = channels_per_file * audio_files.len() as u32;
+            self.track_channel_count = total_channels;
 
             let fallback_title = track_path.file_name().unwrap().to_string_lossy().to_string();
 
@@ -588,6 +576,9 @@ impl App {
             if let Some(eq_enabled) = config["eq_enabled"].as_bool() {
                 self.eq_enabled = eq_enabled;
             }
+            if let Some(playback_device) = config["playback_device"].as_str() {
+                self.playback_device = playback_device.to_string();
+            }
             if let Some(rec_input_device) = config["rec_input_device"].as_str() {
                 self.rec_input_device = rec_input_device.to_string();
             }
@@ -617,6 +608,7 @@ impl App {
             "autoplay": self.autoplay,
             "eq_bands": eq_bands_vec,
             "eq_enabled": self.eq_enabled,
+            "playback_device": self.playback_device,
             "rec_input_device": self.rec_input_device,
             "rec_channel_count": self.rec_channel_count,
             "mon_output_device": self.mon_output_device,
