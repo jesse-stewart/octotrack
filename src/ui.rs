@@ -2,8 +2,10 @@ use crate::app::{App, LoopMode};
 use crate::bigtext::BigText;
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Style, Stylize},
-    widgets::{Block, BorderType, Borders, Padding, Paragraph, Gauge, Bar, BarChart, BarGroup, Clear},
+    style::{Color, Modifier, Style, Stylize},
+    widgets::{
+        Bar, BarChart, BarGroup, Block, BorderType, Borders, Clear, Gauge, Padding, Paragraph,
+    },
     Frame,
 };
 
@@ -46,7 +48,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Min(1),     // Channel levels
-            Constraint::Length(9), // Volume indicator
+            Constraint::Length(9),  // Volume indicator
             Constraint::Length(25), // Info sidebar (increased for artist/track)
         ])
         .split(chunks[2]);
@@ -54,11 +56,13 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     let status_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(20),
-            Constraint::Percentage(20),
-            Constraint::Percentage(20),
-            Constraint::Percentage(20),
-            Constraint::Percentage(20),
+            Constraint::Ratio(1, 7),
+            Constraint::Ratio(1, 7),
+            Constraint::Ratio(1, 7),
+            Constraint::Ratio(1, 7),
+            Constraint::Ratio(1, 7),
+            Constraint::Ratio(1, 7),
+            Constraint::Ratio(1, 7),
         ])
         .split(chunks[3]);
 
@@ -71,7 +75,10 @@ pub fn render(app: &mut App, frame: &mut Frame) {
 
     // Remove "tracks/" prefix if present
     if title_text.starts_with("tracks/") {
-        title_text = title_text.strip_prefix("tracks/").unwrap_or(&title_text).to_string();
+        title_text = title_text
+            .strip_prefix("tracks/")
+            .unwrap_or(&title_text)
+            .to_string();
     }
 
     // Truncate if too long (limit to ~12 chars for small screen)
@@ -89,21 +96,29 @@ pub fn render(app: &mut App, frame: &mut Frame) {
 
     let title_bar = BigText::new(
         title_text,
-        Style::default().fg(COLOR_AMBER[0]).bg(Color::Black)
+        Style::default().fg(COLOR_AMBER[0]).bg(Color::Black),
     );
 
     // Create the progress gauge
-    let (progress_ratio, _time_text) = if let (Some(pos), Some(dur)) = (app.current_position, app.track_duration) {
-        let ratio = if dur > 0.0 { (pos / dur).min(1.0) as f64 } else { 0.0 };
-        let current_min = (pos / 60.0) as u32;
-        let current_sec = (pos % 60.0) as u32;
-        let total_min = (dur / 60.0) as u32;
-        let total_sec = (dur % 60.0) as u32;
-        let text = format!("{}:{:02} / {}:{:02}", current_min, current_sec, total_min, total_sec);
-        (ratio, text)
-    } else {
-        (0.0, "--:-- / --:--".to_string())
-    };
+    let (progress_ratio, _time_text) =
+        if let (Some(pos), Some(dur)) = (app.current_position, app.track_duration) {
+            let ratio = if dur > 0.0 {
+                (pos / dur).min(1.0) as f64
+            } else {
+                0.0
+            };
+            let current_min = (pos / 60.0) as u32;
+            let current_sec = (pos % 60.0) as u32;
+            let total_min = (dur / 60.0) as u32;
+            let total_sec = (dur % 60.0) as u32;
+            let text = format!(
+                "{}:{:02} / {}:{:02}",
+                current_min, current_sec, total_min, total_sec
+            );
+            (ratio, text)
+        } else {
+            (0.0, "--:-- / --:--".to_string())
+        };
 
     let progress_gauge = Gauge::default()
         .block(
@@ -141,17 +156,42 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         title
     };
 
-    let autoplay_text = if app.autoplay { "On" } else { "Off" };
+    let auto_mode_text = match app.auto_mode {
+        crate::app::AutoMode::Off => "Off",
+        crate::app::AutoMode::Play => "Play",
+        crate::app::AutoMode::Rec => "Rec",
+    };
+
+    let rec_status = if app.is_recording {
+        let elapsed = app.recording_elapsed();
+        let min = (elapsed / 60.0) as u32;
+        let sec = (elapsed % 60.0) as u32;
+        let bytes = app.recording_file_bytes();
+        let size_str = if bytes >= 1_073_741_824 {
+            format!("{:.1} GiB", bytes as f64 / 1_073_741_824.0)
+        } else {
+            format!("{:.0} MiB", bytes as f64 / 1_048_576.0)
+        };
+        format!("\u{25cf} REC {:02}:{:02}\n  {}", min, sec, size_str)
+    } else if app.is_monitoring {
+        format!(
+            "\u{25cf} MON {} ({}ch)",
+            app.rec_input_device, app.rec_channel_count
+        )
+    } else {
+        format!("In: {} ({}ch)", app.rec_input_device, app.rec_channel_count)
+    };
 
     let info_content = Paragraph::new(format!(
-        "Artist:\n{}\n\nTrack:\n{}\n\nTrack #:{}/{}\n\n{} Channels\n\nLoop: {}\nAutoplay: {}",
+        "Artist:\n{}\n\nTrack:\n{}\n\nTrack #:{}/{}\n\n{} Channels\n\nLoop: {}\nAuto: {}\n\n{}",
         artist_display,
         title_display,
         app.current_track_index + 1,
         app.track_list.len(),
         app.track_channel_count,
         loop_text,
-        autoplay_text,
+        auto_mode_text,
+        rec_status,
     ))
     .block(
         Block::default()
@@ -160,7 +200,13 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     );
 
     // Create channel meters using BarChart
-    let channel_count = app.channel_levels.len().min(app.track_channel_count as usize);
+    let channel_count = if app.is_recording || app.is_monitoring {
+        app.channel_levels.len().min(app.rec_channel_count as usize)
+    } else {
+        app.channel_levels
+            .len()
+            .min(app.track_channel_count as usize)
+    };
 
     let bar_chart_block = Block::default()
         .title("Channel Levels (dB)")
@@ -169,22 +215,26 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         .borders(Borders::ALL)
         .padding(Padding::new(1, 1, 0, 0));
 
-    if channel_count > 0 && app.is_playing {
-        let bars: Vec<Bar> = app.channel_levels.iter().enumerate().take(channel_count)
+    if channel_count > 0 && (app.is_playing || app.is_recording) {
+        let bars: Vec<Bar> = app
+            .channel_levels
+            .iter()
+            .enumerate()
+            .take(channel_count)
             .map(|(i, &level)| {
                 // Convert dB to a display value (0-60 range for visualization)
-                let level_clamped = level.max(-60.0).min(0.0);
+                let level_clamped = level.clamp(-60.0, 0.0);
                 let display_value = (level_clamped + 60.0) as u64;
 
                 // Choose color based on level
                 let color = if level > -6.0 {
-                    Color::Red  // Clipping warning
+                    Color::Red // Clipping warning
                 } else if level > -12.0 {
-                    COLOR_AMBER[0]  // Good level
+                    COLOR_AMBER[0] // Good level
                 } else if level > -24.0 {
-                    Color::Yellow  // Medium level
+                    Color::Yellow // Medium level
                 } else {
-                    Color::Green  // Low level
+                    Color::Green // Low level
                 };
 
                 let label = format!("Ch{} {:.0}dB", i + 1, level);
@@ -202,20 +252,61 @@ pub fn render(app: &mut App, frame: &mut Frame) {
             .data(BarGroup::default().bars(&bars))
             .bar_width(3)
             .bar_gap(1)
-            .max(60);  // -60dB to 0dB range
+            .max(60); // -60dB to 0dB range
 
         frame.render_widget(bar_chart, meter_chunks[0]);
     } else {
-        // Show placeholder when not playing
-        let placeholder = Paragraph::new(if !app.is_playing {
-            "Press [Space] to start playback"
+        // Show placeholder when not playing or recording
+        let placeholder_text = if app.is_monitoring {
+            "Monitoring..."
+        } else if !app.is_playing && !app.is_recording {
+            "Press [Space] to play  [R] to record  [M] to monitor"
         } else {
             "Initializing meters..."
-        })
-        .block(bar_chart_block)
-        .alignment(Alignment::Center);
+        };
+        let placeholder = Paragraph::new(placeholder_text)
+            .block(bar_chart_block)
+            .alignment(Alignment::Center);
 
         frame.render_widget(placeholder, meter_chunks[0]);
+
+        // Semi-transparent monitoring VU meters rendered on top of placeholder
+        if channel_count > 0 && app.is_monitoring {
+            let mon_bars: Vec<Bar> = app
+                .channel_levels
+                .iter()
+                .enumerate()
+                .take(channel_count)
+                .map(|(i, &level)| {
+                    let level_clamped = level.clamp(-60.0, 0.0);
+                    let display_value = (level_clamped + 60.0) as u64;
+                    let label = format!("Ch{} {:.0}dB", i + 1, level);
+                    let dim_cyan = Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM);
+                    Bar::default()
+                        .value(display_value)
+                        .label(label.into())
+                        .style(dim_cyan)
+                        .value_style(dim_cyan)
+                })
+                .collect();
+
+            let mon_block = Block::default()
+                .title("Monitor")
+                .title_alignment(Alignment::Left)
+                .border_type(BorderType::Rounded)
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM))
+                .padding(Padding::new(1, 1, 0, 0));
+
+            let mon_chart = BarChart::default()
+                .block(mon_block)
+                .data(BarGroup::default().bars(&mon_bars))
+                .bar_width(3)
+                .bar_gap(1)
+                .max(60);
+
+            frame.render_widget(mon_chart, meter_chunks[0]);
+        }
     }
 
     // Create volume indicator (vertical bar)
@@ -302,6 +393,49 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         })
         .alignment(Alignment::Center);
 
+    let rec_label = if app.is_recording {
+        let elapsed = app.recording_elapsed();
+        let min = (elapsed / 60.0) as u32;
+        let sec = (elapsed % 60.0) as u32;
+        format!("[R] \u{25cf} {:02}:{:02}", min, sec)
+    } else {
+        "[R] Record".to_string()
+    };
+
+    let status_content_6 = Paragraph::new(rec_label)
+        .block(
+            Block::default()
+                .border_type(BorderType::Double)
+                .borders(Borders::ALL)
+                .padding(Padding::new(1, 1, 0, 0)),
+        )
+        .style(if app.is_recording {
+            Style::default().fg(Color::Red).bold()
+        } else {
+            Style::default()
+        })
+        .alignment(Alignment::Center);
+
+    let mon_label = if app.is_monitoring {
+        "[M] \u{25cf} Mon"
+    } else {
+        "[M] Monitor"
+    };
+
+    let status_content_7 = Paragraph::new(mon_label)
+        .block(
+            Block::default()
+                .border_type(BorderType::Double)
+                .borders(Borders::ALL)
+                .padding(Padding::new(1, 1, 0, 0)),
+        )
+        .style(if app.is_monitoring {
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM)
+        } else {
+            Style::default()
+        })
+        .alignment(Alignment::Center);
+
     // Render each widget in its respective area
     frame.render_widget(title_block.clone(), title_chunks[0]);
     let title_inner = title_block.inner(title_chunks[0]);
@@ -315,16 +449,43 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     frame.render_widget(status_content_3, status_chunks[2]);
     frame.render_widget(status_content_4, status_chunks[3]);
     frame.render_widget(status_content_5, status_chunks[4]);
+    frame.render_widget(status_content_6, status_chunks[5]);
+    frame.render_widget(status_content_7, status_chunks[6]);
 
     // Render quit confirmation dialog if showing
     if app.show_quit_dialog {
         render_quit_dialog(frame);
     }
 
+    // Render save config confirmation dialog if showing
+    if app.show_save_dialog {
+        render_save_dialog(frame);
+    }
+
     // Render EQ dialog if showing
     if app.show_eq {
         render_eq_dialog(frame, app);
     }
+}
+
+/// Renders a centered save config confirmation dialog
+fn render_save_dialog(frame: &mut Frame) {
+    let area = centered_rect(50, 30, frame.size());
+    frame.render_widget(Clear, area);
+    let dialog_block = Block::default()
+        .title("Save Config")
+        .title_alignment(Alignment::Center)
+        .borders(Borders::ALL)
+        .border_type(BorderType::Double)
+        .border_style(Style::default().fg(COLOR_AMBER[0]))
+        .style(Style::default().bg(Color::Black));
+    let dialog_text = Paragraph::new(
+        "Overwrite config.json with\ncurrent settings?\n\n\
+         [Y]es         [N]o",
+    )
+    .alignment(Alignment::Center)
+    .block(dialog_block);
+    frame.render_widget(dialog_text, area);
 }
 
 /// Renders a centered quit confirmation dialog
@@ -346,7 +507,7 @@ fn render_quit_dialog(frame: &mut Frame) {
     // Create the dialog content
     let dialog_text = Paragraph::new(
         "Are you sure you want to quit?\n\n\n\
-         [Y]es         [N]o"
+         [Y]es         [N]o",
     )
     .alignment(Alignment::Center)
     .block(dialog_block);
@@ -362,7 +523,9 @@ fn render_eq_dialog(frame: &mut Frame, app: &App) {
     frame.render_widget(Clear, area);
 
     // EQ band labels
-    const BAND_LABELS: [&str; 10] = ["31", "62", "125", "250", "500", "1k", "2k", "4k", "8k", "16k"];
+    const BAND_LABELS: [&str; 10] = [
+        "31", "62", "125", "250", "500", "1k", "2k", "4k", "8k", "16k",
+    ];
 
     let title = if app.eq_enabled {
         "Equalizer [ON]"
@@ -375,7 +538,11 @@ fn render_eq_dialog(frame: &mut Frame, app: &App) {
         .title_alignment(Alignment::Center)
         .borders(Borders::ALL)
         .border_type(BorderType::Double)
-        .border_style(Style::default().fg(if app.eq_enabled { COLOR_AMBER[0] } else { COLOR_AMBER[4] }))
+        .border_style(Style::default().fg(if app.eq_enabled {
+            COLOR_AMBER[0]
+        } else {
+            COLOR_AMBER[4]
+        }))
         .style(Style::default().bg(Color::Black));
 
     frame.render_widget(dialog_block.clone(), area);
@@ -386,14 +553,17 @@ fn render_eq_dialog(frame: &mut Frame, app: &App) {
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(3),     // EQ bars
+            Constraint::Min(3),    // EQ bars
             Constraint::Length(1), // Selection indicator
             Constraint::Length(2), // Help text
         ])
         .split(inner);
 
     // Create bars for each EQ band
-    let bars: Vec<Bar> = app.eq_bands.iter().enumerate()
+    let bars: Vec<Bar> = app
+        .eq_bands
+        .iter()
+        .enumerate()
         .map(|(i, &gain)| {
             // Convert -12..+12 dB to 0..24 display value
             let display_value = (gain as i16 + 12) as u64;
@@ -413,7 +583,7 @@ fn render_eq_dialog(frame: &mut Frame, app: &App) {
         .data(BarGroup::default().bars(&bars))
         .bar_width(5)
         .bar_gap(1)
-        .max(24);  // -12 to +12 maps to 0-24
+        .max(24); // -12 to +12 maps to 0-24
 
     frame.render_widget(bar_chart, layout[0]);
 
@@ -430,8 +600,7 @@ fn render_eq_dialog(frame: &mut Frame, app: &App) {
             selector.push(' '); // gap between bars
         }
     }
-    let selector_text = Paragraph::new(selector)
-        .style(Style::default().fg(COLOR_AMBER[0]));
+    let selector_text = Paragraph::new(selector).style(Style::default().fg(COLOR_AMBER[0]));
     frame.render_widget(selector_text, layout[1]);
 
     // Help text

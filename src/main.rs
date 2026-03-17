@@ -1,20 +1,28 @@
-use octotrack::app::{App, AppResult};
+use octotrack::app::{App, AppResult, AutoMode};
 use octotrack::event::{Event, EventHandler};
 use octotrack::handler::handle_key_events;
+use octotrack::schedule;
 use octotrack::tui::Tui;
-use std::io;
-use std::path::{Path, PathBuf};
-use std::fs;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
 
 /// Finds the tracks directory, checking USB storage first, then falling back to local directory
 fn find_tracks_directory() -> String {
-    // Check common USB mount points
-    let usb_mount_points = vec![
-        PathBuf::from("/media"),
-        PathBuf::from("/mnt"),
-    ];
+    // Check common USB/removable storage mount points
+    #[cfg(target_os = "linux")]
+    let usb_mount_points = vec![PathBuf::from("/media"), PathBuf::from("/mnt")];
+
+    #[cfg(target_os = "macos")]
+    let usb_mount_points = vec![PathBuf::from("/Volumes")];
+
+    #[cfg(target_os = "windows")]
+    let usb_mount_points: Vec<PathBuf> = ('D'..='Z')
+        .map(|c| PathBuf::from(format!("{}:\\", c)))
+        .filter(|p| p.exists())
+        .collect();
 
     for mount_root in usb_mount_points {
         if let Ok(entries) = fs::read_dir(&mount_root) {
@@ -31,7 +39,6 @@ fn find_tracks_directory() -> String {
                 if tracks_path.exists() && tracks_path.is_dir() {
                     // Check if the tracks directory has audio files
                     if has_audio_files(&tracks_path) {
-                        println!("Found tracks on USB storage: {}", tracks_path.display());
                         return tracks_path.to_string_lossy().to_string();
                     }
                 }
@@ -40,7 +47,6 @@ fn find_tracks_directory() -> String {
     }
 
     // Fall back to local tracks directory
-    println!("Using local tracks directory");
     "tracks".to_string()
 }
 
@@ -55,7 +61,8 @@ fn has_audio_files(dir: &Path) -> bool {
                 if let Some(ext) = path.extension() {
                     if ext.eq_ignore_ascii_case("mp3")
                         || ext.eq_ignore_ascii_case("wav")
-                        || ext.eq_ignore_ascii_case("flac") {
+                        || ext.eq_ignore_ascii_case("flac")
+                    {
                         return true;
                     }
                 }
@@ -70,7 +77,8 @@ fn has_audio_files(dir: &Path) -> bool {
                             if let Some(ext) = sub_path.extension() {
                                 if ext.eq_ignore_ascii_case("mp3")
                                     || ext.eq_ignore_ascii_case("wav")
-                                    || ext.eq_ignore_ascii_case("flac") {
+                                    || ext.eq_ignore_ascii_case("flac")
+                                {
                                     return true;
                                 }
                             }
@@ -87,6 +95,14 @@ fn main() -> AppResult<()> {
     // Create an application.
     let mut app = App::new();
 
+    // Load and start the cron scheduler if any schedules are configured.
+    let schedules = schedule::load_schedules();
+    if !schedules.is_empty() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        schedule::run_scheduler(schedules, tx);
+        app.schedule_rx = Some(rx);
+    }
+
     // Initialize the terminal user interface.
     let backend = CrosstermBackend::new(io::stderr());
     let terminal = Terminal::new(backend)?;
@@ -98,13 +114,22 @@ fn main() -> AppResult<()> {
     let tracks_dir = find_tracks_directory();
     app.load_tracks(&tracks_dir).unwrap();
 
-
     // Get initial track metadata
-    app.get_metadata();
+    if !app.track_list.is_empty() {
+        app.get_metadata();
+    }
 
-    // Auto-play if enabled in config
-    if app.autoplay && !app.track_list.is_empty() {
-        app.play();
+    // Auto action on startup
+    match app.auto_mode {
+        AutoMode::Rec => {
+            let _ = app.start_recording();
+        }
+        AutoMode::Play => {
+            if !app.track_list.is_empty() {
+                app.play();
+            }
+        }
+        AutoMode::Off => {}
     }
 
     // Start the main loop.
@@ -128,6 +153,7 @@ fn main() -> AppResult<()> {
     }
 
     // Exit the user interface.
+    let _ = app.audio_player.stop_recording();
     app.audio_player.stop()?;
     tui.exit()?;
     Ok(())
