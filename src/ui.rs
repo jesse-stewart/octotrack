@@ -213,7 +213,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
             .take(channel_count)
             .map(|(i, &level)| {
                 // Convert dB to a display value (0-60 range for visualization)
-                let level_clamped = level.max(-60.0).min(0.0);
+                let level_clamped = level.clamp(-60.0, 0.0);
                 let display_value = (level_clamped + 60.0) as u64;
 
                 // Choose color based on level
@@ -268,7 +268,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
                 .enumerate()
                 .take(channel_count)
                 .map(|(i, &level)| {
-                    let level_clamped = level.max(-60.0).min(0.0);
+                    let level_clamped = level.clamp(-60.0, 0.0);
                     let display_value = (level_clamped + 60.0) as u64;
                     let label = format!("Ch{} {:.0}dB", i + 1, level);
                     let dim_cyan = Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM);

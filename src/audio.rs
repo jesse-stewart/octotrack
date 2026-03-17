@@ -45,6 +45,12 @@ pub struct AudioPlayer {
     capture_is_recording: bool,
 }
 
+impl Default for AudioPlayer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AudioPlayer {
     pub fn new() -> Self {
         let fifo_path = PathBuf::from("/tmp/octotrack_mplayer.fifo");
@@ -65,6 +71,7 @@ impl AudioPlayer {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn play(
         &mut self,
         track_path: &PathBuf,
@@ -144,10 +151,7 @@ impl AudioPlayer {
         let status = Command::new("mkfifo").arg(&self.fifo_path).status()?;
 
         if !status.success() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "Failed to create FIFO",
-            ));
+            return Err(io::Error::other("Failed to create FIFO"));
         }
 
         Ok(())
@@ -166,7 +170,7 @@ impl AudioPlayer {
                 .filter_map(|e| e.ok())
                 .map(|e| e.path())
                 .filter(|p| {
-                    p.extension().map_or(false, |ext| {
+                    p.extension().is_some_and(|ext| {
                         ext.eq_ignore_ascii_case("mp3")
                             || ext.eq_ignore_ascii_case("wav")
                             || ext.eq_ignore_ascii_case("flac")
@@ -217,7 +221,7 @@ impl AudioPlayer {
         let stdout = child
             .stdout
             .take()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Failed to capture stdout"))?;
+            .ok_or_else(|| io::Error::other("Failed to capture stdout"))?;
 
         let levels = Arc::clone(&self.channel_levels);
         let channel_count = channel_count as usize;
@@ -240,6 +244,7 @@ impl AudioPlayer {
                         let num_samples = n / 2 / channel_count;
 
                         for i in 0..num_samples {
+                            #[allow(clippy::needless_range_loop)]
                             for ch in 0..channel_count {
                                 let offset = (i * channel_count + ch) * 2;
                                 if offset + 1 < n {
@@ -255,6 +260,7 @@ impl AudioPlayer {
 
                         // Calculate RMS for each channel when we have enough samples
                         let mut updated = false;
+                        #[allow(clippy::needless_range_loop)]
                         for ch in 0..channel_count {
                             if channel_buffers[ch].len() >= window_samples {
                                 // Calculate RMS
@@ -265,7 +271,7 @@ impl AudioPlayer {
                                 // Convert to dB
                                 let db = if rms > 0.0 { 20.0 * rms.log10() } else { -60.0 };
 
-                                current_levels[ch] = db.max(-60.0).min(0.0);
+                                current_levels[ch] = db.clamp(-60.0, 0.0);
                                 updated = true;
 
                                 // Clear buffer for next window
@@ -289,6 +295,7 @@ impl AudioPlayer {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn play_single_file(
         &mut self,
         file_path: &PathBuf,
@@ -343,6 +350,7 @@ impl AudioPlayer {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn play_multi_file(
         &mut self,
         folder_path: &PathBuf,
@@ -358,7 +366,7 @@ impl AudioPlayer {
             .filter_map(|e| e.ok())
             .map(|e| e.path())
             .filter(|p| {
-                p.extension().map_or(false, |ext| {
+                p.extension().is_some_and(|ext| {
                     ext.eq_ignore_ascii_case("mp3")
                         || ext.eq_ignore_ascii_case("wav")
                         || ext.eq_ignore_ascii_case("flac")
@@ -419,9 +427,10 @@ impl AudioPlayer {
             .stderr(Stdio::null())
             .spawn()?;
 
-        let mplayer_stdin = ffmpeg_output.stdout.take().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::Other, "Failed to capture ffmpeg stdout")
-        })?;
+        let mplayer_stdin = ffmpeg_output
+            .stdout
+            .take()
+            .ok_or_else(|| io::Error::other("Failed to capture ffmpeg stdout"))?;
 
         let mut mplayer_cmd = Command::new("mplayer");
         mplayer_cmd
@@ -684,7 +693,7 @@ impl AudioPlayer {
         let stdin = aplay
             .stdin
             .take()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "aplay stdin missing"))?;
+            .ok_or_else(|| io::Error::other("aplay stdin missing"))?;
 
         *self.capture_monitor_sink.lock().unwrap() = Some(stdin);
         self.capture_aplay = Some(aplay);
@@ -767,7 +776,7 @@ impl AudioPlayer {
         let stdout = arecord
             .stdout
             .take()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "arecord stdout missing"))?;
+            .ok_or_else(|| io::Error::other("arecord stdout missing"))?;
 
         if let Some(output_device) = monitor_output {
             let mut aplay = match Command::new("aplay")
@@ -801,7 +810,7 @@ impl AudioPlayer {
             let stdin = aplay
                 .stdin
                 .take()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "aplay stdin missing"))?;
+                .ok_or_else(|| io::Error::other("aplay stdin missing"))?;
             *self.capture_monitor_sink.lock().unwrap() = Some(stdin);
             self.capture_aplay = Some(aplay);
         } else {
@@ -839,7 +848,7 @@ impl AudioPlayer {
         // Apply volume adjustment to each channel
         raw_levels
             .iter()
-            .map(|&level| (level + volume_db).max(-60.0).min(0.0))
+            .map(|&level| (level + volume_db).clamp(-60.0, 0.0))
             .collect()
     }
 }
@@ -915,6 +924,7 @@ fn capture_and_analyse<R: Read>(
                 // Level analysis: decode S32_LE.
                 let num_frames = n / frame_size;
                 for i in 0..num_frames {
+                    #[allow(clippy::needless_range_loop)]
                     for ch in 0..channels {
                         let off = i * frame_size + ch * BYTES_PER_SAMPLE;
                         if off + 3 < n {
@@ -929,13 +939,14 @@ fn capture_and_analyse<R: Read>(
                     }
                 }
                 let mut updated = false;
+                #[allow(clippy::needless_range_loop)]
                 for ch in 0..channels {
                     if ch_bufs[ch].len() >= window_frames {
                         let rms = (ch_bufs[ch].iter().map(|&s| s * s).sum::<f32>()
                             / ch_bufs[ch].len() as f32)
                             .sqrt();
                         let db = if rms > 0.0 { 20.0 * rms.log10() } else { -60.0 };
-                        cur_levels[ch] = db.max(-60.0).min(0.0);
+                        cur_levels[ch] = db.clamp(-60.0, 0.0);
                         ch_bufs[ch].clear();
                         updated = true;
                     }

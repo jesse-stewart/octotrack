@@ -225,7 +225,7 @@ impl App {
                     .ok()
                     .map(|entries| {
                         entries.filter_map(|e| e.ok()).any(|e| {
-                            e.path().extension().map_or(false, |ext| {
+                            e.path().extension().is_some_and(|ext| {
                                 ext.eq_ignore_ascii_case("mp3")
                                     || ext.eq_ignore_ascii_case("wav")
                                     || ext.eq_ignore_ascii_case("flac")
@@ -238,7 +238,7 @@ impl App {
                     tracks.push(path.to_path_buf());
                 }
             } else if path.is_file() {
-                let valid_extension = path.extension().map_or(false, |ext| {
+                let valid_extension = path.extension().is_some_and(|ext| {
                     ext.eq_ignore_ascii_case("mp3")
                         || ext.eq_ignore_ascii_case("wav")
                         || ext.eq_ignore_ascii_case("flac")
@@ -288,7 +288,7 @@ impl App {
                 .filter_map(|e| e.ok())
                 .map(|e| e.path())
                 .filter(|p| {
-                    p.extension().map_or(false, |ext| {
+                    p.extension().is_some_and(|ext| {
                         ext.eq_ignore_ascii_case("mp3")
                             || ext.eq_ignore_ascii_case("wav")
                             || ext.eq_ignore_ascii_case("flac")
@@ -580,9 +580,7 @@ impl App {
         if self.is_playing {
             self.current_position = self.audio_player.get_time_pos().ok();
             self.channel_levels = self.audio_player.get_channel_levels();
-        } else if self.is_recording {
-            self.channel_levels = self.audio_player.get_raw_levels();
-        } else if self.is_monitoring {
+        } else if self.is_recording || self.is_monitoring {
             self.channel_levels = self.audio_player.get_raw_levels();
         }
     }
@@ -615,7 +613,7 @@ impl App {
                 for (i, val) in eq_bands.iter().enumerate() {
                     if i < 10 {
                         if let Some(v) = val.as_i64() {
-                            self.eq_bands[i] = (v as i8).max(-12).min(12);
+                            self.eq_bands[i] = (v as i8).clamp(-12, 12);
                         }
                     }
                 }
