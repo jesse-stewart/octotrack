@@ -17,6 +17,21 @@ pub fn handle_key_events(key_event: KeyEvent, app: &mut App) -> AppResult<()> {
         return Ok(());
     }
 
+    // If save config dialog is showing, handle dialog input
+    if app.show_save_dialog {
+        match key_event.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                let _ = app.save_config();
+                app.show_save_dialog = false;
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                app.show_save_dialog = false;
+            }
+            _ => {}
+        }
+        return Ok(());
+    }
+
     // If EQ overlay is showing, handle EQ input
     if app.show_eq {
         match key_event.code {
@@ -56,8 +71,12 @@ pub fn handle_key_events(key_event: KeyEvent, app: &mut App) -> AppResult<()> {
             }
         }
         KeyCode::Char(' ') => app.play(),
-        KeyCode::Char('s') => {
-            app.stop()?;
+        KeyCode::Char('s') | KeyCode::Char('S') => {
+            if key_event.modifiers == KeyModifiers::CONTROL {
+                app.show_save_dialog = true;
+            } else {
+                app.stop()?;
+            }
         }
         KeyCode::Char('l') => {
             app.toggle_loop_mode();

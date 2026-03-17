@@ -457,10 +457,35 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         render_quit_dialog(frame);
     }
 
+    // Render save config confirmation dialog if showing
+    if app.show_save_dialog {
+        render_save_dialog(frame);
+    }
+
     // Render EQ dialog if showing
     if app.show_eq {
         render_eq_dialog(frame, app);
     }
+}
+
+/// Renders a centered save config confirmation dialog
+fn render_save_dialog(frame: &mut Frame) {
+    let area = centered_rect(50, 30, frame.size());
+    frame.render_widget(Clear, area);
+    let dialog_block = Block::default()
+        .title("Save Config")
+        .title_alignment(Alignment::Center)
+        .borders(Borders::ALL)
+        .border_type(BorderType::Double)
+        .border_style(Style::default().fg(COLOR_AMBER[0]))
+        .style(Style::default().bg(Color::Black));
+    let dialog_text = Paragraph::new(
+        "Overwrite config.json with\ncurrent settings?\n\n\
+         [Y]es         [N]o",
+    )
+    .alignment(Alignment::Center)
+    .block(dialog_block);
+    frame.render_widget(dialog_text, area);
 }
 
 /// Renders a centered quit confirmation dialog

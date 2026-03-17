@@ -1188,8 +1188,7 @@ fn capture_and_analyse<R: Read>(
                                     completed_split_paths.push_back(old_path);
                                     if let Some(max_f) = max_split_files {
                                         while completed_split_paths.len() >= max_f {
-                                            if let Some(oldest) =
-                                                completed_split_paths.pop_front()
+                                            if let Some(oldest) = completed_split_paths.pop_front()
                                             {
                                                 if let Err(e) = std::fs::remove_file(&oldest) {
                                                     log(&format!(

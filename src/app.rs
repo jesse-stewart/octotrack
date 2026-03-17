@@ -48,6 +48,7 @@ pub struct App {
     pub track_duration: Option<f32>,   // Total track duration in seconds
     pub channel_levels: Vec<f32>,      // Per-channel RMS levels in dB
     pub show_quit_dialog: bool,        // Show quit confirmation dialog
+    pub show_save_dialog: bool,        // Show save config confirmation dialog
     pub eq_bands: [i8; 10],            // 10-band EQ gain values (-12 to +12 dB)
     pub eq_enabled: bool,              // EQ bypass toggle
     pub show_eq: bool,                 // Show EQ overlay
@@ -68,6 +69,7 @@ pub struct App {
     pub rec_split_file_mb: u64, // Split recording into files of this size in MB (0 = no splitting)
     pub mon_output_device: String, // ALSA output device for monitoring (should match playback card)
     pub is_monitoring: bool,
+    pub start_track: String, // Filename (or partial name) to select on startup; "" = first track
     pub schedule_rx: Option<mpsc::Receiver<ScheduleMsg>>,
 }
 
@@ -91,7 +93,8 @@ impl Default for App {
             track_duration: None,
             channel_levels: vec![],
             show_quit_dialog: false, // Dialog hidden by default
-            eq_bands: [0; 10],       // Flat EQ by default
+            show_save_dialog: false,
+            eq_bands: [0; 10], // Flat EQ by default
             eq_enabled: true,
             show_eq: false,
             eq_selected_band: 0,
@@ -111,6 +114,7 @@ impl Default for App {
             rec_split_file_mb: 0,  // 0 = no splitting
             mon_output_device: "hw:0,0".to_string(),
             is_monitoring: false,
+            start_track: String::new(),
             schedule_rx: None,
         }
     }
@@ -134,13 +138,31 @@ impl App {
             self.schedule_rx = rx;
             for msg in msgs {
                 match msg {
-                    ScheduleMsg::Start(ScheduleAction::Rec) => {
+                    ScheduleMsg::Start {
+                        action: ScheduleAction::Rec,
+                        ..
+                    } => {
                         let _ = self.start_recording();
                     }
                     ScheduleMsg::Stop(ScheduleAction::Rec) => {
                         let _ = self.stop_recording();
                     }
-                    ScheduleMsg::Start(ScheduleAction::Play) => {
+                    ScheduleMsg::Start {
+                        action: ScheduleAction::Play,
+                        start_track,
+                    } => {
+                        // If a start_track is specified, find and select it first.
+                        if let Some(ref needle) = start_track {
+                            let needle = needle.to_lowercase();
+                            if let Some(idx) = self.track_list.iter().position(|p| {
+                                p.file_name()
+                                    .map(|n| n.to_string_lossy().to_lowercase().contains(&needle))
+                                    .unwrap_or(false)
+                            }) {
+                                self.current_track_index = idx;
+                                self.get_metadata();
+                            }
+                        }
                         if !self.track_list.is_empty() {
                             self.play();
                         }
@@ -157,7 +179,6 @@ impl App {
 
     /// Set running to false to quit the application.
     pub fn quit(&mut self) {
-        let _ = self.save_config();
         self.running = false;
     }
 
@@ -201,19 +222,16 @@ impl App {
             AutoMode::Play => AutoMode::Rec,
             AutoMode::Rec => AutoMode::Off,
         };
-        let _ = self.save_config();
     }
 
     pub fn increase_volume(&mut self) {
         self.volume = (self.volume + 1).min(100);
         let _ = self.audio_player.set_volume(self.volume);
-        let _ = self.save_config();
     }
 
     pub fn decrease_volume(&mut self) {
         self.volume = self.volume.saturating_sub(1);
         let _ = self.audio_player.set_volume(self.volume);
-        let _ = self.save_config();
     }
 
     pub fn toggle_eq_view(&mut self) {
@@ -227,7 +245,6 @@ impl App {
                 .audio_player
                 .set_eq_enabled(&self.eq_bands, self.eq_enabled);
         }
-        let _ = self.save_config();
     }
 
     pub fn eq_select_next(&mut self) {
@@ -244,7 +261,6 @@ impl App {
         if self.is_playing && self.eq_enabled {
             let _ = self.audio_player.update_eq_bands(&self.eq_bands);
         }
-        let _ = self.save_config();
     }
 
     pub fn eq_decrease_band(&mut self) {
@@ -253,7 +269,6 @@ impl App {
         if self.is_playing && self.eq_enabled {
             let _ = self.audio_player.update_eq_bands(&self.eq_bands);
         }
-        let _ = self.save_config();
     }
 
     pub fn load_tracks(&mut self, folder_path: &str) -> AppResult<()> {
@@ -316,6 +331,23 @@ impl App {
 
         tracks.sort();
         self.track_list = tracks;
+
+        // Apply start_track: find the first track whose filename contains the search string
+        // (case-insensitive). Falls back to index 0 if empty or no match.
+        if !self.start_track.is_empty() {
+            let needle = self.start_track.to_lowercase();
+            if let Some(idx) = self.track_list.iter().position(|p| {
+                p.file_name()
+                    .map(|n| n.to_string_lossy().to_lowercase().contains(&needle))
+                    .unwrap_or(false)
+            }) {
+                self.current_track_index = idx;
+            } else {
+                self.current_track_index = 0;
+            }
+        } else {
+            self.current_track_index = 0;
+        }
 
         Ok(())
     }
@@ -779,12 +811,22 @@ impl App {
             if let Some(mon_output_device) = config["mon_output_device"].as_str() {
                 self.mon_output_device = mon_output_device.to_string();
             }
+            if let Some(loop_mode) = config["loop_mode"].as_str() {
+                self.loop_mode = match loop_mode {
+                    "single" => LoopMode::LoopSingle,
+                    "all" => LoopMode::LoopAll,
+                    _ => LoopMode::NoLoop,
+                };
+            }
+            if let Some(start_track) = config["start_track"].as_str() {
+                self.start_track = start_track.to_string();
+            }
         }
 
         Ok(())
     }
 
-    fn save_config(&self) -> AppResult<()> {
+    pub fn save_config(&self) -> AppResult<()> {
         let config_path = Self::get_config_path();
 
         // Create config directory if it doesn't exist
@@ -817,6 +859,12 @@ impl App {
             "rec_min_free_mb": self.rec_min_free_mb,
             "rec_split_file_mb": self.rec_split_file_mb,
             "mon_output_device": self.mon_output_device,
+            "loop_mode": match self.loop_mode {
+                LoopMode::NoLoop => "off",
+                LoopMode::LoopSingle => "single",
+                LoopMode::LoopAll => "all",
+            },
+            "start_track": self.start_track,
         });
 
         fs::write(config_path, serde_json::to_string_pretty(&config)?)?;

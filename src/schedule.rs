@@ -13,9 +13,13 @@ pub enum ScheduleAction {
     Play,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 pub enum ScheduleMsg {
-    Start(ScheduleAction),
+    Start {
+        action: ScheduleAction,
+        /// Filename (or partial name) to select before starting playback.
+        start_track: Option<String>,
+    },
     Stop(ScheduleAction),
 }
 
@@ -27,6 +31,9 @@ pub struct ScheduleEntry {
     pub cron: CronExpr,
     pub action: ScheduleAction,
     pub duration_secs: u64,
+    /// Filename (or partial name) to select when this schedule fires.
+    /// Only meaningful for `action: "play"`.
+    pub start_track: Option<String>,
 }
 
 impl ScheduleEntry {
@@ -44,7 +51,13 @@ impl ScheduleEntry {
         } else {
             return None;
         };
-        Some(ScheduleEntry { cron, action, duration_secs })
+        let start_track = v["start_track"].as_str().map(|s| s.to_string());
+        Some(ScheduleEntry {
+            cron,
+            action,
+            duration_secs,
+            start_track,
+        })
     }
 }
 
@@ -83,9 +96,9 @@ pub fn run_scheduler(entries: Vec<ScheduleEntry>, sender: mpsc::Sender<ScheduleM
         if entries.is_empty() {
             return;
         }
-        // Keep a small debounce queue so the same schedule can't fire twice in
-        // the same minute if there's a tiny timing slip (e.g. sleep overshoots).
-        let mut last_fired: VecDeque<(u32, u32, ScheduleAction)> = VecDeque::new();
+        // Debounce per entry index: prevents a single entry from double-firing if
+        // the sleep overshoots a minute boundary. Keyed by (entry_index, min, hour).
+        let mut last_fired: VecDeque<(usize, u32, u32)> = VecDeque::new();
 
         loop {
             // Sleep until the start of the next minute.
@@ -99,22 +112,29 @@ pub fn run_scheduler(entries: Vec<ScheduleEntry>, sender: mpsc::Sender<ScheduleM
             let t = local_now();
             let (min, hour, day, month, wday) = t;
 
-            // Prune the debounce queue (keep only entries from this exact minute).
-            last_fired.retain(|&(m, h, _)| m == min && h == hour);
+            // Prune entries that are no longer in this minute.
+            last_fired.retain(|&(_, m, h)| m == min && h == hour);
 
-            for entry in &entries {
+            for (idx, entry) in entries.iter().enumerate() {
                 if entry.cron.matches(min, hour, day, month, wday) {
-                    // Skip if we already fired this action this minute.
-                    if last_fired.iter().any(|&(m, h, a)| m == min && h == hour && a == entry.action) {
+                    // Skip if this specific entry already fired this minute.
+                    if last_fired
+                        .iter()
+                        .any(|&(i, m, h)| i == idx && m == min && h == hour)
+                    {
                         continue;
                     }
-                    last_fired.push_back((min, hour, entry.action));
+                    last_fired.push_back((idx, min, hour));
 
                     let tx = sender.clone();
                     let action = entry.action;
                     let dur = entry.duration_secs;
+                    let start_track = entry.start_track.clone();
 
-                    let _ = tx.send(ScheduleMsg::Start(action));
+                    let _ = tx.send(ScheduleMsg::Start {
+                        action,
+                        start_track,
+                    });
 
                     // Spawn a short-lived thread to send the Stop after the duration.
                     thread::spawn(move || {
@@ -156,10 +176,10 @@ fn local_now() -> (u32, u32, u32, u32, u32) {
 
 #[derive(Debug)]
 pub struct CronExpr {
-    minutes:  Vec<u32>, // 0-59
-    hours:    Vec<u32>, // 0-23
-    days:     Vec<u32>, // 1-31
-    months:   Vec<u32>, // 1-12
+    minutes: Vec<u32>,  // 0-59
+    hours: Vec<u32>,    // 0-23
+    days: Vec<u32>,     // 1-31
+    months: Vec<u32>,   // 1-12
     weekdays: Vec<u32>, // 0-6  (0 = Sunday)
 }
 
@@ -170,10 +190,10 @@ impl CronExpr {
             return None;
         }
         Some(CronExpr {
-            minutes:  expand_field(f[0], 0, 59)?,
-            hours:    expand_field(f[1], 0, 23)?,
-            days:     expand_field(f[2], 1, 31)?,
-            months:   expand_field(f[3], 1, 12)?,
+            minutes: expand_field(f[0], 0, 59)?,
+            hours: expand_field(f[1], 0, 23)?,
+            days: expand_field(f[2], 1, 31)?,
+            months: expand_field(f[3], 1, 12)?,
             weekdays: expand_field(f[4], 0, 6)?,
         })
     }
@@ -205,14 +225,18 @@ fn expand_part(s: &str, lo: u32, hi: u32, out: &mut Vec<u32>) -> Option<()> {
     // */step
     if let Some(step_s) = s.strip_prefix("*/") {
         let step: u32 = step_s.parse().ok()?;
-        if step == 0 { return None; }
+        if step == 0 {
+            return None;
+        }
         out.extend((lo..=hi).step_by(step as usize));
         return Some(());
     }
     // range/step  or  range  or  single
     if let Some((range_s, step_s)) = s.split_once('/') {
         let step: u32 = step_s.parse().ok()?;
-        if step == 0 { return None; }
+        if step == 0 {
+            return None;
+        }
         let (a, b) = parse_range(range_s)?;
         out.extend((a..=b).step_by(step as usize));
         return Some(());
