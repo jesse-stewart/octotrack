@@ -1262,7 +1262,11 @@ fn capture_and_analyse<R: Read>(
             "capture_and_analyse: {} bytes written as {}{}",
             logical_bytes,
             fmt,
-            if stopped_by_limit { " (stopped at limit)" } else { "" }
+            if stopped_by_limit {
+                " (stopped at limit)"
+            } else {
+                ""
+            }
         ));
     }
 }
