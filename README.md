@@ -16,7 +16,9 @@ A terminal-based multi-channel audio player built with Rust and Ratatui. Designe
 - Track navigation (previous/next)
 - Progress indicator with time display
 - Metadata display (artist, title from file tags)
-- Multi-channel recording via ALSA (configurable input device)
+- Multi-channel recording via ALSA (configurable device, channel count, sample rate, bit depth)
+- Configurable recording limits: stop at a file size, circular-buffer overwrite, or split into multiple files
+- Dashcam mode: rolling file splits that delete the previous file, keeping only the current recording on disk
 - Real-time input monitoring with level metering
 - Configurable audio devices for playback, recording, and monitoring
 
@@ -117,17 +119,32 @@ EQ bands: 31Hz, 62Hz, 125Hz, 250Hz, 500Hz, 1kHz, 2kHz, 4kHz, 8kHz, 16kHz — eac
 
 ## Recording
 
-Press `R` to start recording from the configured input device. Recordings are saved as WAV files in the current tracks directory with the filename `REC_<timestamp>.wav`.
+Press `R` to start recording from the configured input device. Recordings are saved as WAV files in the current tracks directory.
 
-- **Format:** 32-bit signed little-endian PCM (S32_LE)
-- **Sample rate:** 192kHz
-- **Channels:** Determined by `rec_channel_count` in the config
+- **Format:** configurable bit depth (16, 24, or 32-bit PCM) at a configurable sample rate
+- **Channels:** set by `rec_channel_count` in the config
+- **Filename:** `REC_<timestamp>.wav` — or `REC_<timestamp>_001.wav`, `_002.wav`, … when file splitting is enabled
 
-Press `R` again to stop recording. The new recording will appear in your track list automatically.
+Press `R` again to stop. The new recording appears in your track list automatically.
 
-Press `M` to toggle input monitoring — this routes audio from the input device to the monitoring output device in real-time with level metering, so you can hear what's coming in. Monitoring can be used independently or while recording.
+Press `M` to toggle input monitoring — this routes audio from the input device to the monitoring output in real-time with level metering, so you can hear what's coming in. Monitoring can be active independently or while recording.
 
 **Note:** Playback is automatically stopped when monitoring or recording starts, as the audio device may not support simultaneous playback and capture.
+
+### Recording modes
+
+Recording behaviour is controlled by three config settings working together: `rec_split_file_mb`, `rec_max_file_mode`, and `rec_max_file_mb`.
+
+| `rec_split_file_mb` | `rec_max_file_mode` | `rec_max_file_mb` | Behaviour |
+|---|---|---|---|
+| `0` | `"stop"` | `0` | Record a single unlimited file |
+| `0` | `"stop"` | `4000` | Record a single file, stop at 4000 MB |
+| `0` | `"drop"` | `4000` | Circular buffer: overwrite the oldest audio once the file reaches 4000 MB, keeping only the most recent 4000 MB |
+| `3900` | `"stop"` | `0` | Split into files ≤ 3900 MB each, keep all files, record forever |
+| `3900` | `"stop"` | `20000` | Split into files ≤ 3900 MB each, stop when total reaches 20000 MB |
+| `3900` | `"drop"` | `0` | **Dashcam mode:** split into files ≤ 3900 MB each, delete the previous file when opening the next — only the current file is kept on disk |
+
+**Why split?** Standard WAV files have a 4 GB data limit. Set `rec_split_file_mb` to something below 4000 (e.g. `3900`) to stay safely under that limit on long recordings. RF64 is supported for single-file recordings that exceed 4 GB, but many DAWs handle split files more reliably.
 
 ## Preparing Multi-Channel Tracks with merge_tracks.sh
 
@@ -188,7 +205,7 @@ ffmpeg -i input.wav -metadata artist="Artist Name" -metadata title="Track Title"
 
 ## Configuration
 
-Octotrack stores its configuration in `~/.config/octotrack/config.json`.
+Octotrack stores its configuration in `~/.config/octotrack/config.json`. The file is created automatically on first run and updated whenever settings are changed via the keyboard.
 
 Example config:
 
@@ -196,29 +213,48 @@ Example config:
 {
   "volume": 80,
   "max_volume": 100,
-  "autoplay": true,
+  "auto_mode": "off",
   "eq_bands": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
   "eq_enabled": true,
   "playback_device": "hw:0,0",
+  "playback_channel_count": 8,
   "rec_input_device": "hw:0,0",
-  "mon_output_device": "hw:0,0",
-  "rec_channel_count": 8
+  "rec_channel_count": 8,
+  "rec_sample_rate": 192000,
+  "rec_bit_depth": 32,
+  "rec_max_file_mb": 0,
+  "rec_max_file_mode": "stop",
+  "rec_min_free_mb": 1024,
+  "rec_split_file_mb": 0,
+  "mon_output_device": "hw:0,0"
 }
 ```
 
+### Playback
+
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `volume` | `100` | Current volume level (0-100), as a percentage of `max_volume` |
-| `max_volume` | `100` | Maximum volume ceiling passed to mplayer's `softvol-max`. Lower this if audio is too loud even at low volume levels. For example, set to `50` to halve the maximum output level. |
-| `autoplay` | `false` | Automatically start playback when the app launches |
-| `eq_bands` | `[0,0,0,0,0,0,0,0,0,0]` | 10-band EQ gain values (-12 to +12 dB) for bands: 31Hz, 62Hz, 125Hz, 250Hz, 500Hz, 1kHz, 2kHz, 4kHz, 8kHz, 16kHz |
-| `eq_enabled` | `true` | Whether the EQ is active (false = bypassed) |
-| `playback_device` | `hw:0,0` | ALSA device for audio playback |
-| `rec_input_device` | `hw:0,0` | ALSA device for recording input |
-| `mon_output_device` | `hw:0,0` | ALSA device for monitoring output |
-| `rec_channel_count` | `8` | Number of channels to record |
+| `volume` | `100` | Current volume level (0–100) as a percentage of `max_volume`. Updated automatically via `↑`/`↓`. |
+| `max_volume` | `100` | Volume ceiling passed to mplayer's `softvol-max`. Set to `50` to halve the maximum output level if audio is too loud at low volumes. |
+| `auto_mode` | `"off"` | What to do on startup: `"off"` (do nothing), `"play"` (start playback), `"rec"` (start recording). Toggle with `A`. |
+| `eq_bands` | `[0,…,0]` | 10-band EQ gains in dB (−12 to +12) for 31 Hz, 62 Hz, 125 Hz, 250 Hz, 500 Hz, 1 kHz, 2 kHz, 4 kHz, 8 kHz, 16 kHz. |
+| `eq_enabled` | `true` | Enable/disable the EQ. Toggle with `B` inside the EQ overlay. |
+| `playback_device` | `"hw:0,0"` | ALSA device for audio playback. |
+| `playback_channel_count` | `8` | Number of output channels the playback device supports. |
 
-Volume, autoplay, and EQ settings are updated automatically when changed via keyboard controls. Audio device settings and `max_volume` must be edited in the config file directly.
+### Recording
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `rec_input_device` | `"hw:0,0"` | ALSA capture device. |
+| `rec_channel_count` | `8` | Number of channels to record. |
+| `rec_sample_rate` | `192000` | Sample rate in Hz (e.g. `44100`, `48000`, `96000`, `192000`). |
+| `rec_bit_depth` | `32` | Bit depth: `16`, `24`, or `32`. |
+| `rec_max_file_mb` | `0` | Total recording size limit in MB. `0` = unlimited. |
+| `rec_max_file_mode` | `"stop"` | What happens when the size limit is hit (or when rolling a split file): `"stop"` keeps all files and stops recording; `"drop"` deletes the previous file on each split roll (dashcam) or overwrites the oldest audio in-place (circular buffer, no splitting). |
+| `rec_min_free_mb` | `1024` | Stop recording (or lock the circular-buffer size) when free disk space drops below this many MB. |
+| `rec_split_file_mb` | `0` | Split recording into multiple files of this size in MB. `0` = no splitting. See [Recording modes](#recording-modes) for the full behaviour matrix. |
+| `mon_output_device` | `"hw:0,0"` | ALSA device for monitoring output. |
 
 ### Listing Audio Devices
 

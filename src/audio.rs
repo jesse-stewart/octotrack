@@ -25,6 +25,17 @@ fn bytes_per_sample(bit_depth: u16) -> usize {
     }
 }
 
+/// Returns `{base_stem}_{index:03}.{ext}` in the same directory as `base`.
+fn split_file_path(base: &Path, index: u32) -> PathBuf {
+    let stem = base.file_stem().unwrap_or_default().to_string_lossy();
+    let ext = base
+        .extension()
+        .map(|e| e.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "wav".to_string());
+    let dir = base.parent().unwrap_or(Path::new("."));
+    dir.join(format!("{}_{:03}.{}", stem, index, ext))
+}
+
 /// Opens (or creates) a WAV file at `path` and writes an 80-byte placeholder header
 /// (data length = 0).  The file is opened read+write so drop-mode can seek back later.
 /// Returns an error if the file cannot be created or the header cannot be written.
@@ -94,6 +105,10 @@ pub struct RecordingConfig {
     pub max_data_bytes: Option<u64>,
     pub drop_mode: bool,
     pub min_free_bytes: u64,
+    /// Split recording into multiple files of this size. None = no splitting.
+    /// Combined with drop_mode: false → keep all files; drop_mode: true → delete the previous
+    /// file on each roll (dashcam style). Files are named `{stem}_001.wav`, `{stem}_002.wav`, …
+    pub split_size_bytes: Option<u64>,
 }
 
 pub struct AudioPlayer {
@@ -739,6 +754,7 @@ impl AudioPlayer {
                 max_data_bytes: None,
                 drop_mode: false,
                 min_free_bytes: 0,
+                split_size_bytes: None,
             },
         )
     }
@@ -870,11 +886,18 @@ impl AudioPlayer {
             max_data_bytes,
             drop_mode,
             min_free_bytes,
+            split_size_bytes,
         } = rec_cfg;
         let ch = channel_count as usize;
 
         // Open WAV file before spawning any processes so failures surface immediately.
-        let wav_file: Option<File> = match &wav_path {
+        // If splitting, the first file gets a _001 suffix; wav_path remains the base for
+        // generating subsequent split filenames inside the capture thread.
+        let first_path = match &wav_path {
+            Some(p) if split_size_bytes.is_some() => Some(split_file_path(p, 1)),
+            _ => wav_path.clone(),
+        };
+        let wav_file: Option<File> = match &first_path {
             None => None,
             Some(path) => Some(open_wav_file(path, ch, sample_rate, bit_depth)?),
         };
@@ -965,6 +988,7 @@ impl AudioPlayer {
                 drop_mode,
                 recording_bytes,
                 min_free_bytes,
+                split_size_bytes,
             );
         });
 
@@ -1028,6 +1052,7 @@ fn capture_and_analyse<R: Read>(
     drop_mode: bool,
     recording_bytes: Arc<Mutex<u64>>,
     min_free_bytes: u64,
+    split_size_bytes: Option<u64>,
 ) {
     let bps = bytes_per_sample(bit_depth);
     let frame_size = channels * bps;
@@ -1122,23 +1147,90 @@ fn capture_and_analyse<R: Read>(
     let mut stopped_by_limit = false;
     let mut bytes_since_free_check: u64 = 0;
     const FREE_CHECK_INTERVAL: u64 = 4 * 1024 * 1024; // check every 4 MB written
+    // total_bytes accumulates across all split files; used for max_data checks and the UI counter.
+    // logical_bytes tracks only the current file (for header finalisation and drop-mode).
+    let mut total_bytes: u64 = 0;
+    let mut split_file_index: u32 = 1; // current split file number (1-based)
 
     loop {
         match reader.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
                 // Write to WAV file.
-                if let Some((ref mut file, ref mut _total)) = wav {
+                if wav.is_some() {
                     let data = &buf[..n];
                     let mut written = 0usize;
 
                     while written < data.len() {
-                        let chunk = &data[written..];
+                        // Roll to the next split file when the current one is full.
+                        // (Splitting is only supported in non-drop mode.)
+                        if let Some(split) = split_size_bytes {
+                            if logical_bytes >= split {
+                                let old_path =
+                                    split_file_path(wav_path.as_ref().unwrap(), split_file_index);
+                                if let Some((ref mut f, _)) = wav {
+                                    let _ = write_header(f, logical_bytes);
+                                }
+                                // In drop mode, delete the just-closed file (dashcam style).
+                                if drop_mode {
+                                    if let Err(e) = std::fs::remove_file(&old_path) {
+                                        log(&format!(
+                                            "capture_and_analyse: failed to remove old split file {:?}: {}",
+                                            old_path, e
+                                        ));
+                                    }
+                                }
+                                split_file_index += 1;
+                                let next_path =
+                                    split_file_path(wav_path.as_ref().unwrap(), split_file_index);
+                                log(&format!(
+                                    "capture_and_analyse: opening split file {:?}",
+                                    next_path
+                                ));
+                                wav = open_wav_file(&next_path, channels, sample_rate, bit_depth)
+                                    .ok()
+                                    .map(|f| (f, 0u64));
+                                logical_bytes = 0;
+                                write_offset = HEADER_SIZE;
+                                if wav.is_none() {
+                                    log(&format!(
+                                        "capture_and_analyse: failed to open split file {:?}, stopping",
+                                        next_path
+                                    ));
+                                    stopped_by_limit = true;
+                                    break;
+                                }
+                            }
+                        }
 
-                        if let Some(max) = max_data {
-                            if !drop_mode {
-                                // Stop mode: check if we'd exceed the limit.
-                                let remaining = max.saturating_sub(logical_bytes);
+                        let chunk = &data[written..];
+                        let (file, _) = wav.as_mut().unwrap();
+
+                        if drop_mode && split_size_bytes.is_none() {
+                            // Circular buffer mode: write within a fixed data region.
+                            let max = max_data.unwrap_or(u64::MAX);
+                            let data_end = HEADER_SIZE + max;
+                            let space_to_end = (data_end - write_offset) as usize;
+                            let to_write = chunk.len().min(space_to_end);
+
+                            let _ = file.seek(SeekFrom::Start(write_offset));
+                            if file.write_all(&chunk[..to_write]).is_ok() {
+                                write_offset += to_write as u64;
+                                logical_bytes = (logical_bytes + to_write as u64).min(max);
+                                total_bytes = logical_bytes;
+                                written += to_write;
+                            } else {
+                                break;
+                            }
+
+                            if write_offset >= data_end {
+                                write_offset = HEADER_SIZE;
+                                wrapped = true;
+                            }
+                        } else if !drop_mode {
+                            if let Some(max) = max_data {
+                                // Stop mode: limit is total across all split files.
+                                let remaining = max.saturating_sub(total_bytes);
                                 if remaining == 0 {
                                     stopped_by_limit = true;
                                     break;
@@ -1146,43 +1238,41 @@ fn capture_and_analyse<R: Read>(
                                 let to_write = chunk.len().min(remaining as usize);
                                 if file.write_all(&chunk[..to_write]).is_ok() {
                                     logical_bytes += to_write as u64;
+                                    total_bytes += to_write as u64;
                                     write_offset += to_write as u64;
                                 }
                                 written += to_write;
                             } else {
-                                // Drop mode: circular write within the data region.
-                                let data_end = HEADER_SIZE + max;
-                                let space_to_end = (data_end - write_offset) as usize;
-                                let to_write = chunk.len().min(space_to_end);
-
-                                let _ = file.seek(SeekFrom::Start(write_offset));
-                                if file.write_all(&chunk[..to_write]).is_ok() {
-                                    write_offset += to_write as u64;
-                                    logical_bytes = (logical_bytes + to_write as u64).min(max);
-                                    written += to_write;
+                                // Unlimited, with optional per-file split limit.
+                                let to_write = if let Some(split) = split_size_bytes {
+                                    chunk.len().min(split.saturating_sub(logical_bytes) as usize)
                                 } else {
-                                    break;
+                                    chunk.len()
+                                };
+                                if file.write_all(&chunk[..to_write]).is_ok() {
+                                    logical_bytes += to_write as u64;
+                                    total_bytes += to_write as u64;
+                                    write_offset += to_write as u64;
                                 }
-
-                                // Wrap around if we hit the end of the data region.
-                                if write_offset >= data_end {
-                                    write_offset = HEADER_SIZE;
-                                    wrapped = true;
-                                }
+                                written += to_write;
                             }
                         } else {
-                            // Unlimited: simple sequential write.
-                            if file.write_all(chunk).is_ok() {
-                                logical_bytes += chunk.len() as u64;
-                                write_offset += chunk.len() as u64;
+                            // drop_mode + split_size_bytes: sequential write; rolling and
+                            // deletion of the old file are handled at the top of this loop.
+                            let to_write =
+                                chunk.len().min(split_size_bytes.unwrap().saturating_sub(logical_bytes) as usize);
+                            if file.write_all(&chunk[..to_write]).is_ok() {
+                                logical_bytes += to_write as u64;
+                                total_bytes += to_write as u64;
+                                write_offset += to_write as u64;
                             }
-                            written = data.len();
+                            written += to_write;
                         }
                     }
 
-                    // Update shared byte counter for UI.
+                    // Update shared byte counter for UI (total across all split files).
                     if let Ok(mut g) = recording_bytes.lock() {
-                        *g = logical_bytes;
+                        *g = total_bytes;
                     }
 
                     if stopped_by_limit {
@@ -1190,8 +1280,8 @@ fn capture_and_analyse<R: Read>(
                     }
 
                     // Disk space guard: check periodically.
-                    // In drop mode, locks the current file size as the circular cap.
-                    // In stop mode, stops the recording.
+                    // In circular-buffer drop mode, locks the current file size as the cap.
+                    // In all other modes (stop, split, split+drop), stops the recording.
                     if min_free_bytes > 0 {
                         bytes_since_free_check += n as u64;
                         if bytes_since_free_check >= FREE_CHECK_INTERVAL {
@@ -1199,7 +1289,8 @@ fn capture_and_analyse<R: Read>(
                             if let Some(path) = &wav_path {
                                 if let Some(free) = free_bytes_on_path(path) {
                                     if free < min_free_bytes {
-                                        if !drop_mode {
+                                        let is_circular = drop_mode && split_size_bytes.is_none();
+                                        if !is_circular {
                                             log(&format!(
                                                 "capture_and_analyse: disk space low ({} bytes free), stopping",
                                                 free
@@ -1357,10 +1448,16 @@ fn capture_and_analyse<R: Read>(
         } else {
             "WAV"
         };
+        let files_note = if split_file_index > 1 {
+            format!(" ({} files)", split_file_index)
+        } else {
+            String::new()
+        };
         log(&format!(
-            "capture_and_analyse: {} bytes written as {}{}",
-            logical_bytes,
+            "capture_and_analyse: {} bytes written as {}{}{}",
+            total_bytes,
             fmt,
+            files_note,
             if stopped_by_limit {
                 " (stopped at limit)"
             } else {

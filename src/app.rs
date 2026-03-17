@@ -63,6 +63,7 @@ pub struct App {
     pub rec_max_file_mb: u64, // Max recording file size in MB (0 = unlimited)
     pub rec_max_file_mode: RecMaxMode, // What to do when max size is reached
     pub rec_min_free_mb: u64, // Stop/drop when free disk space drops below this (MB)
+    pub rec_split_file_mb: u64, // Split recording into files of this size in MB (0 = no splitting)
     pub mon_output_device: String, // ALSA output device for monitoring (should match playback card)
     pub is_monitoring: bool,
 }
@@ -104,6 +105,7 @@ impl Default for App {
             rec_max_file_mb: 0, // 0 = unlimited
             rec_max_file_mode: RecMaxMode::Stop,
             rec_min_free_mb: 1024, // 1 GB safety margin
+            rec_split_file_mb: 0, // 0 = no splitting
             mon_output_device: "hw:0,0".to_string(),
             is_monitoring: false,
         }
@@ -476,6 +478,11 @@ impl App {
             max_data_bytes,
             drop_mode: self.rec_max_file_mode == RecMaxMode::Drop,
             min_free_bytes: self.rec_min_free_mb * 1024 * 1024,
+            split_size_bytes: if self.rec_split_file_mb > 0 {
+                Some(self.rec_split_file_mb * 1024 * 1024)
+            } else {
+                None
+            },
         };
         self.audio_player.start_recording(
             &output_path,
@@ -730,6 +737,9 @@ impl App {
             if let Some(rec_min_free_mb) = config["rec_min_free_mb"].as_u64() {
                 self.rec_min_free_mb = rec_min_free_mb;
             }
+            if let Some(rec_split_file_mb) = config["rec_split_file_mb"].as_u64() {
+                self.rec_split_file_mb = rec_split_file_mb;
+            }
             if let Some(mon_output_device) = config["mon_output_device"].as_str() {
                 self.mon_output_device = mon_output_device.to_string();
             }
@@ -769,6 +779,7 @@ impl App {
                 RecMaxMode::Drop => "drop",
             },
             "rec_min_free_mb": self.rec_min_free_mb,
+            "rec_split_file_mb": self.rec_split_file_mb,
             "mon_output_device": self.mon_output_device,
         });
 
