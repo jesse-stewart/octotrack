@@ -11,6 +11,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Real-time input monitoring with level metering
 - Configurable audio devices for playback, recording, and monitoring (`playback_device`, `rec_input_device`, `mon_output_device`)
 - Configurable recording channel count (`rec_channel_count`)
+- Configurable recording sample rate and bit depth (`rec_sample_rate`, `rec_bit_depth`)
+- RF64 format support for recordings exceeding 4 GiB
+- File size cap with stop or circular-buffer drop mode (`rec_max_file_mb`, `rec_max_file_mode`)
+- Disk space safety margin — stops or drops when free space falls below threshold (`rec_min_free_mb`)
+- Optional file splitting into fixed-size segments (`rec_split_file_mb`)
+- Auto mode (`auto_mode`: `off`, `play`, `rec`) replaces separate `autoplay` flag
+- Cron-based scheduling for timed record and playback (`~/.config/octotrack/schedules.json`)
 - Automatic format conversion for playback compatibility across different audio interfaces
 - VU meters for recording and monitoring input levels
 - CONTRIBUTING.md, CODE_OF_CONDUCT.md, issue and PR templates

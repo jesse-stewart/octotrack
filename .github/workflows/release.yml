@@ -24,11 +24,17 @@ jobs:
         run: |
           if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
             sudo dpkg --add-architecture arm64
-          fi
-          sudo apt-get update
-          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
+            # Restrict .list sources to amd64 (only lines without existing arch specifier)
+            sudo sed -i 's|^deb \([^[]\)|deb [arch=amd64] \1|g' /etc/apt/sources.list 2>/dev/null || true
+            sudo find /etc/apt/sources.list.d/ -name "*.list" -exec sudo sed -i 's|^deb \([^[]\)|deb [arch=amd64] \1|g' {} \; 2>/dev/null || true
+            # Restrict DEB822 .sources files to amd64
+            sudo python3 .github/scripts/fix_apt_sources.py
+            # Add arm64 sources from Ubuntu ports
+            printf 'deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble main restricted universe multiverse\ndeb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble-updates main restricted universe multiverse\ndeb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble-security main restricted universe multiverse\n' | sudo tee /etc/apt/sources.list.d/arm64-ports.list
+            sudo apt-get update
             sudo apt-get install -y gcc-aarch64-linux-gnu libasound2-dev:arm64
           else
+            sudo apt-get update
             sudo apt-get install -y libasound2-dev
           fi
 
@@ -68,7 +74,8 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
+          draft: false
+          body_path: CHANGELOG.md
           files: |
             octotrack-linux-arm64/octotrack-linux-arm64
             octotrack-linux-x86_64/octotrack-linux-x86_64
