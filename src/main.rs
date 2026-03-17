@@ -10,8 +10,18 @@ use std::path::{Path, PathBuf};
 
 /// Finds the tracks directory, checking USB storage first, then falling back to local directory
 fn find_tracks_directory() -> String {
-    // Check common USB mount points
+    // Check common USB/removable storage mount points
+    #[cfg(target_os = "linux")]
     let usb_mount_points = vec![PathBuf::from("/media"), PathBuf::from("/mnt")];
+
+    #[cfg(target_os = "macos")]
+    let usb_mount_points = vec![PathBuf::from("/Volumes")];
+
+    #[cfg(target_os = "windows")]
+    let usb_mount_points: Vec<PathBuf> = ('D'..='Z')
+        .map(|c| PathBuf::from(format!("{}:\\", c)))
+        .filter(|p| p.exists())
+        .collect();
 
     for mount_root in usb_mount_points {
         if let Ok(entries) = fs::read_dir(&mount_root) {

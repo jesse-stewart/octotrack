@@ -6,10 +6,15 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
 
-const LOG_PATH: &str = "/tmp/octotrack.log";
+#[cfg(unix)]
+extern crate libc;
+
+fn log_path() -> PathBuf {
+    std::env::temp_dir().join("octotrack.log")
+}
 
 fn log(msg: &str) {
-    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(LOG_PATH) {
+    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(log_path()) {
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -22,7 +27,7 @@ fn log_stdio() -> Stdio {
     OpenOptions::new()
         .create(true)
         .append(true)
-        .open(LOG_PATH)
+        .open(log_path())
         .map(Stdio::from)
         .unwrap_or_else(|_| Stdio::null())
 }
@@ -53,7 +58,7 @@ impl Default for AudioPlayer {
 
 impl AudioPlayer {
     pub fn new() -> Self {
-        let fifo_path = PathBuf::from("/tmp/octotrack_mplayer.fifo");
+        let fifo_path = std::env::temp_dir().join("octotrack_mplayer.fifo");
         AudioPlayer {
             process: None,
             ffmpeg_process: None,
@@ -721,16 +726,17 @@ impl AudioPlayer {
         }
         *self.capture_monitor_sink.lock().unwrap() = None;
         // SIGTERM arecord — causes it to flush and close stdout, giving the thread a clean EOF.
-        if let Some(process) = self.capture_arecord.take() {
-            let pid = process.id();
-            let _ = Command::new("kill")
-                .arg("-TERM")
-                .arg(pid.to_string())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
-            let mut p = process;
-            let _ = p.wait();
+        if let Some(mut process) = self.capture_arecord.take() {
+            #[cfg(unix)]
+            {
+                // Send SIGTERM for graceful shutdown (flush buffers).
+                unsafe { libc::kill(process.id() as libc::pid_t, libc::SIGTERM); }
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = process.kill();
+            }
+            let _ = process.wait();
         }
         // Join thread — if recording, this guarantees WAV header is finalised on disk.
         if let Some(handle) = self.capture_thread.take() {

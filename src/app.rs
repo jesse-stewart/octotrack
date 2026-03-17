@@ -586,9 +586,8 @@ impl App {
     }
 
     fn get_config_path() -> PathBuf {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        PathBuf::from(home)
-            .join(".config")
+        dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
             .join("octotrack")
             .join("config.json")
     }
