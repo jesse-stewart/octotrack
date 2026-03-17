@@ -1147,10 +1147,21 @@ fn capture_and_analyse<R: Read>(
     let mut stopped_by_limit = false;
     let mut bytes_since_free_check: u64 = 0;
     const FREE_CHECK_INTERVAL: u64 = 4 * 1024 * 1024; // check every 4 MB written
-    // total_bytes accumulates across all split files; used for max_data checks and the UI counter.
-    // logical_bytes tracks only the current file (for header finalisation and drop-mode).
+                                                      // total_bytes accumulates across all split files; used for the UI counter.
+                                                      // logical_bytes tracks only the current file (for header finalisation and drop-mode).
     let mut total_bytes: u64 = 0;
     let mut split_file_index: u32 = 1; // current split file number (1-based)
+                                       // In drop+split mode: queue of completed file paths for oldest-first eviction.
+                                       // We keep at most (max_data_bytes / split_size_bytes) files on disk at once.
+    let max_split_files: Option<usize> = if drop_mode {
+        split_size_bytes
+            .zip(max_data_bytes)
+            .map(|(s, m)| (m / s).max(1) as usize)
+    } else {
+        None
+    };
+    let mut completed_split_paths: std::collections::VecDeque<PathBuf> =
+        std::collections::VecDeque::new();
 
     loop {
         match reader.read(&mut buf) {
@@ -1171,13 +1182,28 @@ fn capture_and_analyse<R: Read>(
                                 if let Some((ref mut f, _)) = wav {
                                     let _ = write_header(f, logical_bytes);
                                 }
-                                // In drop mode, delete the just-closed file (dashcam style).
+                                // In drop mode, maintain a rolling window of completed files.
+                                // Evict the oldest when the window is full.
                                 if drop_mode {
-                                    if let Err(e) = std::fs::remove_file(&old_path) {
-                                        log(&format!(
-                                            "capture_and_analyse: failed to remove old split file {:?}: {}",
-                                            old_path, e
-                                        ));
+                                    completed_split_paths.push_back(old_path);
+                                    if let Some(max_f) = max_split_files {
+                                        while completed_split_paths.len() >= max_f {
+                                            if let Some(oldest) =
+                                                completed_split_paths.pop_front()
+                                            {
+                                                if let Err(e) = std::fs::remove_file(&oldest) {
+                                                    log(&format!(
+                                                        "capture_and_analyse: failed to remove old split file {:?}: {}",
+                                                        oldest, e
+                                                    ));
+                                                } else {
+                                                    log(&format!(
+                                                        "capture_and_analyse: removed old split file {:?}",
+                                                        oldest
+                                                    ));
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                                 split_file_index += 1;
@@ -1245,7 +1271,9 @@ fn capture_and_analyse<R: Read>(
                             } else {
                                 // Unlimited, with optional per-file split limit.
                                 let to_write = if let Some(split) = split_size_bytes {
-                                    chunk.len().min(split.saturating_sub(logical_bytes) as usize)
+                                    chunk
+                                        .len()
+                                        .min(split.saturating_sub(logical_bytes) as usize)
                                 } else {
                                     chunk.len()
                                 };
@@ -1259,8 +1287,10 @@ fn capture_and_analyse<R: Read>(
                         } else {
                             // drop_mode + split_size_bytes: sequential write; rolling and
                             // deletion of the old file are handled at the top of this loop.
-                            let to_write =
-                                chunk.len().min(split_size_bytes.unwrap().saturating_sub(logical_bytes) as usize);
+                            let to_write = chunk
+                                .len()
+                                .min(split_size_bytes.unwrap().saturating_sub(logical_bytes)
+                                    as usize);
                             if file.write_all(&chunk[..to_write]).is_ok() {
                                 logical_bytes += to_write as u64;
                                 total_bytes += to_write as u64;

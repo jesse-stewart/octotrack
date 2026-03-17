@@ -1,6 +1,7 @@
 use octotrack::app::{App, AppResult, AutoMode};
 use octotrack::event::{Event, EventHandler};
 use octotrack::handler::handle_key_events;
+use octotrack::schedule;
 use octotrack::tui::Tui;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
@@ -93,6 +94,14 @@ fn has_audio_files(dir: &Path) -> bool {
 fn main() -> AppResult<()> {
     // Create an application.
     let mut app = App::new();
+
+    // Load and start the cron scheduler if any schedules are configured.
+    let schedules = schedule::load_schedules();
+    if !schedules.is_empty() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        schedule::run_scheduler(schedules, tx);
+        app.schedule_rx = Some(rx);
+    }
 
     // Initialize the terminal user interface.
     let backend = CrosstermBackend::new(io::stderr());

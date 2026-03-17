@@ -18,3 +18,6 @@ pub mod handler;
 
 /// Big text widget.
 pub mod bigtext;
+
+/// Cron-style task scheduler.
+pub mod schedule;

@@ -133,18 +133,30 @@ Press `M` to toggle input monitoring — this routes audio from the input device
 
 ### Recording modes
 
-Recording behaviour is controlled by three config settings working together: `rec_split_file_mb`, `rec_max_file_mode`, and `rec_max_file_mb`.
+Three settings work together to control what happens as a recording grows: `rec_split_file_mb` sets the per-file size, `rec_max_file_mode` controls what to do when limits are hit, and `rec_max_file_mb` sets the total size cap.
 
-| `rec_split_file_mb` | `rec_max_file_mode` | `rec_max_file_mb` | Behaviour |
-|---|---|---|---|
-| `0` | `"stop"` | `0` | Record a single unlimited file |
-| `0` | `"stop"` | `4000` | Record a single file, stop at 4000 MB |
-| `0` | `"drop"` | `4000` | Circular buffer: overwrite the oldest audio once the file reaches 4000 MB, keeping only the most recent 4000 MB |
-| `3900` | `"stop"` | `0` | Split into files ≤ 3900 MB each, keep all files, record forever |
-| `3900` | `"stop"` | `20000` | Split into files ≤ 3900 MB each, stop when total reaches 20000 MB |
-| `3900` | `"drop"` | `0` | **Dashcam mode:** split into files ≤ 3900 MB each, delete the previous file when opening the next — only the current file is kept on disk |
+#### Without splitting (`rec_split_file_mb: 0`)
 
-**Why split?** Standard WAV files have a 4 GB data limit. Set `rec_split_file_mb` to something below 4000 (e.g. `3900`) to stay safely under that limit on long recordings. RF64 is supported for single-file recordings that exceed 4 GB, but many DAWs handle split files more reliably.
+| `rec_max_file_mode` | `rec_max_file_mb` | Behaviour |
+|---|---|---|
+| `"stop"` | `0` | Record a single file until you press stop |
+| `"stop"` | `4000` | Record a single file, stop automatically at 4000 MB |
+| `"drop"` | `4000` | Circular buffer: keep recording forever into a single 4000 MB file, overwriting the oldest audio as new audio arrives |
+
+#### With splitting (`rec_split_file_mb: 3900`)
+
+Files are named `REC_<timestamp>_001.wav`, `_002.wav`, … A new file is opened automatically each time the current one reaches `rec_split_file_mb`.
+
+| `rec_max_file_mode` | `rec_max_file_mb` | Behaviour |
+|---|---|---|
+| `"stop"` | `0` | Split into files ≤ 3900 MB, keep all of them, record until you press stop |
+| `"stop"` | `20000` | Split into files ≤ 3900 MB, keep all of them, stop automatically once the total reaches 20000 MB |
+| `"drop"` | `20000` | **Rolling window:** split into files ≤ 3900 MB and keep at most `20000 / 3900 ≈ 5` files on disk. When the 6th file starts, the 1st is deleted — the disk always holds ~20000 MB of the most recent audio |
+| `"drop"` | `0` | Split into files ≤ 3900 MB, keep all of them indefinitely (same as `"stop"` with no limit) |
+
+**Why use splitting?** Standard WAV has a 4 GB data limit per file. Splitting at 3900 MB keeps every file safely under that limit. It also protects against data loss from file corruption — if a file is damaged, only that segment is affected. RF64 is supported for single-file recordings that exceed 4 GB, but most DAWs handle split files more reliably.
+
+**Rolling window use case:** A monitoring system that should run indefinitely without filling the disk. Set `rec_split_file_mb` to a convenient chunk size (e.g. 3900 MB ≈ ~30 minutes at 8ch/192kHz/32bit), set `rec_max_file_mb` to however much total disk you want to use, and set `rec_max_file_mode` to `"drop"`. The recorder writes new files and deletes old ones automatically — you always have the most recent N minutes on disk.
 
 ## Preparing Multi-Channel Tracks with merge_tracks.sh
 

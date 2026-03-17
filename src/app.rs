@@ -1,5 +1,7 @@
 use crate::audio::{AudioPlayer, RecordingConfig};
+use crate::schedule::{ScheduleAction, ScheduleMsg};
 use serde_json::{json, Value};
+use std::sync::mpsc;
 use std::{error, fs, path::PathBuf, process::Command, time::Instant};
 use walkdir::WalkDir;
 
@@ -66,6 +68,7 @@ pub struct App {
     pub rec_split_file_mb: u64, // Split recording into files of this size in MB (0 = no splitting)
     pub mon_output_device: String, // ALSA output device for monitoring (should match playback card)
     pub is_monitoring: bool,
+    pub schedule_rx: Option<mpsc::Receiver<ScheduleMsg>>,
 }
 
 impl Default for App {
@@ -105,9 +108,10 @@ impl Default for App {
             rec_max_file_mb: 0, // 0 = unlimited
             rec_max_file_mode: RecMaxMode::Stop,
             rec_min_free_mb: 1024, // 1 GB safety margin
-            rec_split_file_mb: 0, // 0 = no splitting
+            rec_split_file_mb: 0,  // 0 = no splitting
             mon_output_device: "hw:0,0".to_string(),
             is_monitoring: false,
+            schedule_rx: None,
         }
     }
 }
@@ -121,7 +125,35 @@ impl App {
     }
 
     /// Handles the tick event of the terminal.
-    pub fn tick(&self) {}
+    pub fn tick(&mut self) {
+        // Drain any pending scheduled actions.
+        // Take the receiver out to avoid holding a borrow while calling &mut self methods.
+        let rx = self.schedule_rx.take();
+        if let Some(ref r) = rx {
+            let msgs: Vec<ScheduleMsg> = std::iter::from_fn(|| r.try_recv().ok()).collect();
+            self.schedule_rx = rx;
+            for msg in msgs {
+                match msg {
+                    ScheduleMsg::Start(ScheduleAction::Rec) => {
+                        let _ = self.start_recording();
+                    }
+                    ScheduleMsg::Stop(ScheduleAction::Rec) => {
+                        let _ = self.stop_recording();
+                    }
+                    ScheduleMsg::Start(ScheduleAction::Play) => {
+                        if !self.track_list.is_empty() {
+                            self.play();
+                        }
+                    }
+                    ScheduleMsg::Stop(ScheduleAction::Play) => {
+                        let _ = self.stop();
+                    }
+                }
+            }
+        } else {
+            self.schedule_rx = rx;
+        }
+    }
 
     /// Set running to false to quit the application.
     pub fn quit(&mut self) {
@@ -505,12 +537,16 @@ impl App {
         }
         self.is_recording = true;
         self.recording_start_time = Some(Instant::now());
-        let display_name = filename
-            .strip_suffix(".wav")
-            .unwrap_or(&filename)
-            .to_string();
-        self.track_title = format!("{}/{}", self.tracks_dir, display_name);
-        self.recording_path = Some(output_path);
+        let stem = filename.strip_suffix(".wav").unwrap_or(&filename);
+        self.track_title = format!("{}/{}", self.tracks_dir, stem);
+        // When splitting, the first file on disk is _001.wav — use that as the recording path
+        // so stop_recording can find it in the track list after the session ends.
+        let first_path = if self.rec_split_file_mb > 0 {
+            PathBuf::from(&self.tracks_dir).join(format!("{}_001.wav", stem))
+        } else {
+            output_path
+        };
+        self.recording_path = Some(first_path);
         Ok(())
     }
 
