@@ -9,6 +9,22 @@ use std::time::Instant;
 #[cfg(unix)]
 extern crate libc;
 
+fn alsa_format(bit_depth: u16) -> &'static str {
+    match bit_depth {
+        16 => "S16_LE",
+        24 => "S24_3LE",
+        _ => "S32_LE",
+    }
+}
+
+fn bytes_per_sample(bit_depth: u16) -> usize {
+    match bit_depth {
+        16 => 2,
+        24 => 3,
+        _ => 4,
+    }
+}
+
 fn log_path() -> PathBuf {
     std::env::temp_dir().join("octotrack.log")
 }
@@ -587,10 +603,12 @@ impl AudioPlayer {
         output_path: &PathBuf,
         input_device: &str,
         channel_count: u32,
+        sample_rate: u32,
+        bit_depth: u16,
     ) -> io::Result<()> {
         log(&format!(
-            "start_recording: device={} channels={} path={:?}",
-            input_device, channel_count, output_path
+            "start_recording: device={} channels={} rate={} bits={} path={:?}",
+            input_device, channel_count, sample_rate, bit_depth, output_path
         ));
         self.stop_capture()?;
 
@@ -598,7 +616,7 @@ impl AudioPlayer {
             std::fs::create_dir_all(parent)?;
         }
         *self.channel_levels.lock().unwrap() = vec![-60.0; channel_count as usize];
-        self.start_capture_internal(input_device, channel_count, Some(output_path.clone()), None)?;
+        self.start_capture_internal(input_device, channel_count, sample_rate, bit_depth, Some(output_path.clone()), None)?;
         self.capture_is_recording = true;
         Ok(())
     }
@@ -634,21 +652,23 @@ impl AudioPlayer {
         input_device: &str,
         output_device: &str,
         channel_count: u32,
+        sample_rate: u32,
+        bit_depth: u16,
     ) -> io::Result<()> {
         log(&format!(
-            "start_monitoring: in={} out={} channels={}",
-            input_device, output_device, channel_count
+            "start_monitoring: in={} out={} channels={} rate={} bits={}",
+            input_device, output_device, channel_count, sample_rate, bit_depth
         ));
 
         if self.capture_is_recording && self.capture_arecord.is_some() {
             // Recording is active — add monitoring output without interrupting capture.
-            return self.enable_monitor_output(output_device, channel_count);
+            return self.enable_monitor_output(output_device, channel_count, sample_rate, bit_depth);
         }
 
         // No active capture — start a monitoring-only session.
         self.stop_capture()?;
         *self.channel_levels.lock().unwrap() = vec![-60.0; channel_count as usize];
-        self.start_capture_internal(input_device, channel_count, None, Some(output_device))
+        self.start_capture_internal(input_device, channel_count, sample_rate, bit_depth, None, Some(output_device))
     }
 
     pub fn stop_monitoring(&mut self) -> io::Result<()> {
@@ -677,7 +697,7 @@ impl AudioPlayer {
     }
 
     /// Start an aplay process and wire its stdin into the running capture thread.
-    fn enable_monitor_output(&mut self, output_device: &str, channel_count: u32) -> io::Result<()> {
+    fn enable_monitor_output(&mut self, output_device: &str, channel_count: u32, sample_rate: u32, bit_depth: u16) -> io::Result<()> {
         // Tear down any previous aplay first.
         self.disable_monitor_output()?;
 
@@ -687,9 +707,9 @@ impl AudioPlayer {
             .arg("-c")
             .arg(channel_count.to_string())
             .arg("-r")
-            .arg("192000")
+            .arg(sample_rate.to_string())
             .arg("-f")
-            .arg("S32_LE")
+            .arg(alsa_format(bit_depth))
             .arg("-t")
             .arg("raw")
             .stdin(Stdio::piped())
@@ -761,6 +781,8 @@ impl AudioPlayer {
         &mut self,
         input_device: &str,
         channel_count: u32,
+        sample_rate: u32,
+        bit_depth: u16,
         wav_path: Option<PathBuf>,
         monitor_output: Option<&str>,
     ) -> io::Result<()> {
@@ -770,9 +792,9 @@ impl AudioPlayer {
             .arg("-c")
             .arg(channel_count.to_string())
             .arg("-r")
-            .arg("192000")
+            .arg(sample_rate.to_string())
             .arg("-f")
-            .arg("S32_LE")
+            .arg(alsa_format(bit_depth))
             .arg("-t")
             .arg("raw")
             .arg("--buffer-size=65536")
@@ -799,9 +821,9 @@ impl AudioPlayer {
                 .arg("-c")
                 .arg(channel_count.to_string())
                 .arg("-r")
-                .arg("192000")
+                .arg(sample_rate.to_string())
                 .arg("-f")
-                .arg("S32_LE")
+                .arg(alsa_format(bit_depth))
                 .arg("-t")
                 .arg("raw")
                 .stdin(Stdio::piped())
@@ -836,7 +858,7 @@ impl AudioPlayer {
         let ch = channel_count as usize;
 
         let handle = thread::spawn(move || {
-            capture_and_analyse(stdout, wav_path, monitor_sink, ch, levels);
+            capture_and_analyse(stdout, wav_path, monitor_sink, ch, sample_rate, bit_depth, levels);
         });
 
         self.capture_arecord = Some(arecord);
@@ -876,41 +898,84 @@ fn capture_and_analyse<R: Read>(
     wav_path: Option<PathBuf>,
     monitor_sink: Arc<Mutex<Option<ChildStdin>>>,
     channels: usize,
+    sample_rate: u32,
+    bit_depth: u16,
     levels: Arc<Mutex<Vec<f32>>>,
 ) {
-    const SAMPLE_RATE: u32 = 192_000;
-    const BITS: u16 = 32;
-    const BYTES_PER_SAMPLE: usize = 4;
-    let frame_size = channels * BYTES_PER_SAMPLE;
-    let byte_rate = SAMPLE_RATE * channels as u32 * BYTES_PER_SAMPLE as u32;
-    let block_align = channels as u16 * BYTES_PER_SAMPLE as u16;
+    let bps = bytes_per_sample(bit_depth);
+    let frame_size = channels * bps;
+    let byte_rate = sample_rate * channels as u32 * bps as u32;
+    let block_align = channels as u16 * bps as u16;
 
-    let write_wav_header = |f: &mut File, data_bytes: u32| -> io::Result<()> {
+    // Header is always 80 bytes. For data < 4 GiB we write standard WAV + JUNK pad;
+    // for data >= 4 GiB we write RF64 with a ds64 chunk. Both are exactly 80 bytes
+    // so the PCM data always starts at offset 80.
+    const HEADER_SIZE: u64 = 80;
+    const MAX_WAV_DATA: u64 = u32::MAX as u64 - 36;
+
+    let write_header = |f: &mut File, data_bytes: u64| -> io::Result<()> {
         f.seek(SeekFrom::Start(0))?;
-        f.write_all(b"RIFF")?;
-        f.write_all(&(data_bytes + 36).to_le_bytes())?;
-        f.write_all(b"WAVE")?;
-        f.write_all(b"fmt ")?;
-        f.write_all(&16u32.to_le_bytes())?;
-        f.write_all(&1u16.to_le_bytes())?;
-        f.write_all(&(channels as u16).to_le_bytes())?;
-        f.write_all(&SAMPLE_RATE.to_le_bytes())?;
-        f.write_all(&byte_rate.to_le_bytes())?;
-        f.write_all(&block_align.to_le_bytes())?;
-        f.write_all(&BITS.to_le_bytes())?;
-        f.write_all(b"data")?;
-        f.write_all(&data_bytes.to_le_bytes())?;
+        let sample_count = data_bytes / bps as u64;
+        if data_bytes <= MAX_WAV_DATA {
+            // Standard WAV with JUNK chunk to fill the ds64 space (36 bytes).
+            let riff_size = (data_bytes + (HEADER_SIZE - 8)) as u32;
+            f.write_all(b"RIFF")?;
+            f.write_all(&riff_size.to_le_bytes())?;
+            f.write_all(b"WAVE")?;
+            // JUNK chunk: 4 (id) + 4 (size) + 28 (payload) = 36 bytes
+            f.write_all(b"JUNK")?;
+            f.write_all(&28u32.to_le_bytes())?;
+            f.write_all(&[0u8; 28])?;
+            // fmt chunk
+            f.write_all(b"fmt ")?;
+            f.write_all(&16u32.to_le_bytes())?;
+            f.write_all(&1u16.to_le_bytes())?; // PCM
+            f.write_all(&(channels as u16).to_le_bytes())?;
+            f.write_all(&sample_rate.to_le_bytes())?;
+            f.write_all(&byte_rate.to_le_bytes())?;
+            f.write_all(&block_align.to_le_bytes())?;
+            f.write_all(&bit_depth.to_le_bytes())?;
+            // data chunk
+            f.write_all(b"data")?;
+            f.write_all(&(data_bytes as u32).to_le_bytes())?;
+        } else {
+            // RF64 header with ds64 chunk for >4 GiB recordings.
+            let riff_size = 0xFFFFFFFFu32;
+            f.write_all(b"RF64")?;
+            f.write_all(&riff_size.to_le_bytes())?;
+            f.write_all(b"WAVE")?;
+            // ds64 chunk: 4 (id) + 4 (size) + 28 (payload) = 36 bytes
+            f.write_all(b"ds64")?;
+            f.write_all(&28u32.to_le_bytes())?;
+            let rf64_riff_size = data_bytes + (HEADER_SIZE - 8);
+            f.write_all(&rf64_riff_size.to_le_bytes())?; // riffSize (u64)
+            f.write_all(&data_bytes.to_le_bytes())?; // dataSize (u64)
+            f.write_all(&sample_count.to_le_bytes())?; // sampleCount (u64)
+            f.write_all(&0u32.to_le_bytes())?; // tableLength
+            // fmt chunk
+            f.write_all(b"fmt ")?;
+            f.write_all(&16u32.to_le_bytes())?;
+            f.write_all(&1u16.to_le_bytes())?; // PCM
+            f.write_all(&(channels as u16).to_le_bytes())?;
+            f.write_all(&sample_rate.to_le_bytes())?;
+            f.write_all(&byte_rate.to_le_bytes())?;
+            f.write_all(&block_align.to_le_bytes())?;
+            f.write_all(&bit_depth.to_le_bytes())?;
+            // data chunk — size sentinel for RF64
+            f.write_all(b"data")?;
+            f.write_all(&0xFFFFFFFFu32.to_le_bytes())?;
+        }
         Ok(())
     };
 
-    // Open WAV file if recording.
-    let mut wav: Option<(File, u32)> = wav_path.as_ref().and_then(|path| {
+    // Open WAV file if recording — write placeholder header.
+    let mut wav: Option<(File, u64)> = wav_path.as_ref().and_then(|path| {
         File::create(path)
             .ok()
-            .and_then(|mut f| write_wav_header(&mut f, 0).ok().map(|_| (f, 0u32)))
+            .and_then(|mut f| write_header(&mut f, 0).ok().map(|_| (f, 0u64)))
     });
 
-    let window_frames: usize = (SAMPLE_RATE / 10) as usize; // 100 ms
+    let window_frames: usize = (sample_rate / 10) as usize; // 100 ms
     let mut ch_bufs: Vec<Vec<f32>> = vec![vec![]; channels];
     let mut cur_levels = vec![-60.0f32; channels];
     let buf_size = frame_size * 4096;
@@ -923,7 +988,7 @@ fn capture_and_analyse<R: Read>(
                 // Write to WAV file.
                 if let Some((ref mut file, ref mut total)) = wav {
                     if file.write_all(&buf[..n]).is_ok() {
-                        *total += n as u32;
+                        *total += n as u64;
                     }
                 }
                 // Write to monitoring output; clear on broken pipe.
@@ -935,20 +1000,37 @@ fn capture_and_analyse<R: Read>(
                         }
                     }
                 }
-                // Level analysis: decode S32_LE.
+                // Level analysis: decode samples.
                 let num_frames = n / frame_size;
                 for i in 0..num_frames {
                     #[allow(clippy::needless_range_loop)]
                     for ch in 0..channels {
-                        let off = i * frame_size + ch * BYTES_PER_SAMPLE;
-                        if off + 3 < n {
-                            let s = i32::from_le_bytes([
-                                buf[off],
-                                buf[off + 1],
-                                buf[off + 2],
-                                buf[off + 3],
-                            ]);
-                            ch_bufs[ch].push(s as f32 / i32::MAX as f32);
+                        let off = i * frame_size + ch * bps;
+                        if off + bps <= n {
+                            let sample = match bit_depth {
+                                16 => {
+                                    let s = i16::from_le_bytes([buf[off], buf[off + 1]]);
+                                    s as f32 / i16::MAX as f32
+                                }
+                                24 => {
+                                    // S24_3LE: 3 bytes, sign-extend to i32
+                                    let s = ((buf[off] as i32)
+                                        | ((buf[off + 1] as i32) << 8)
+                                        | ((buf[off + 2] as i32) << 16))
+                                        << 8 >> 8; // sign-extend
+                                    s as f32 / 0x7FFFFF as f32
+                                }
+                                _ => {
+                                    let s = i32::from_le_bytes([
+                                        buf[off],
+                                        buf[off + 1],
+                                        buf[off + 2],
+                                        buf[off + 3],
+                                    ]);
+                                    s as f32 / i32::MAX as f32
+                                }
+                            };
+                            ch_bufs[ch].push(sample);
                         }
                     }
                 }
@@ -975,12 +1057,13 @@ fn capture_and_analyse<R: Read>(
         }
     }
 
-    // Finalise WAV header.
+    // Finalise header (WAV or RF64 depending on size).
     if let Some((mut file, total_bytes)) = wav {
-        let _ = write_wav_header(&mut file, total_bytes);
+        let _ = write_header(&mut file, total_bytes);
+        let fmt = if total_bytes > MAX_WAV_DATA { "RF64" } else { "WAV" };
         log(&format!(
-            "capture_and_analyse: {} bytes written to WAV",
-            total_bytes
+            "capture_and_analyse: {} bytes written as {}",
+            total_bytes, fmt
         ));
     }
 }

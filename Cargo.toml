@@ -2,7 +2,7 @@
 name = "octotrack"
 version = "0.2.0"
 authors = ["Jesse Stewart <jesse@jessestewart.com>"]
-license = "GPL-3.0"
+license = "GPL-3.0-only"
 edition = "2021"
 
 [dependencies]

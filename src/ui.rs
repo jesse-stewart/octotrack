@@ -156,7 +156,11 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         title
     };
 
-    let autoplay_text = if app.autoplay { "On" } else { "Off" };
+    let auto_mode_text = match app.auto_mode {
+        crate::app::AutoMode::Off => "Off",
+        crate::app::AutoMode::Play => "Play",
+        crate::app::AutoMode::Rec => "Rec",
+    };
 
     let rec_status = if app.is_recording {
         let elapsed = app.recording_elapsed();
@@ -173,14 +177,14 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     };
 
     let info_content = Paragraph::new(format!(
-        "Artist:\n{}\n\nTrack:\n{}\n\nTrack #:{}/{}\n\n{} Channels\n\nLoop: {}\nAutoplay: {}\n\n{}",
+        "Artist:\n{}\n\nTrack:\n{}\n\nTrack #:{}/{}\n\n{} Channels\n\nLoop: {}\nAuto: {}\n\n{}",
         artist_display,
         title_display,
         app.current_track_index + 1,
         app.track_list.len(),
         app.track_channel_count,
         loop_text,
-        autoplay_text,
+        auto_mode_text,
         rec_status,
     ))
     .block(

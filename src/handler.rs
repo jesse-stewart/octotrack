@@ -63,7 +63,7 @@ pub fn handle_key_events(key_event: KeyEvent, app: &mut App) -> AppResult<()> {
             app.toggle_loop_mode();
         }
         KeyCode::Char('a') => {
-            app.toggle_autoplay();
+            app.cycle_auto_mode();
         }
         KeyCode::Char('e') => {
             app.toggle_eq_view();

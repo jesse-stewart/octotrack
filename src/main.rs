@@ -1,4 +1,4 @@
-use octotrack::app::{App, AppResult};
+use octotrack::app::{App, AppResult, AutoMode};
 use octotrack::event::{Event, EventHandler};
 use octotrack::handler::handle_key_events;
 use octotrack::tui::Tui;
@@ -110,9 +110,17 @@ fn main() -> AppResult<()> {
         app.get_metadata();
     }
 
-    // Auto-play if enabled in config
-    if app.autoplay && !app.track_list.is_empty() {
-        app.play();
+    // Auto action on startup
+    match app.auto_mode {
+        AutoMode::Rec => {
+            let _ = app.start_recording();
+        }
+        AutoMode::Play => {
+            if !app.track_list.is_empty() {
+                app.play();
+            }
+        }
+        AutoMode::Off => {}
     }
 
     // Start the main loop.

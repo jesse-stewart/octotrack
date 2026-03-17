@@ -13,6 +13,13 @@ pub enum LoopMode {
     LoopAll,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AutoMode {
+    Off,
+    Play,
+    Rec,
+}
+
 /// Application.
 pub struct App {
     /// Is the application running?
@@ -28,7 +35,7 @@ pub struct App {
     pub loop_mode: LoopMode,
     pub volume: u8,                    // Master volume 0-100
     pub max_volume: u8,                // Maximum volume level (softvol-max for mplayer)
-    pub autoplay: bool,                // Auto-play on startup
+    pub auto_mode: AutoMode,            // Auto action on startup: Off, Play, or Rec
     pub current_position: Option<f32>, // Current playback position in seconds
     pub track_duration: Option<f32>,   // Total track duration in seconds
     pub channel_levels: Vec<f32>,      // Per-channel RMS levels in dB
@@ -45,6 +52,8 @@ pub struct App {
     pub playback_channel_count: u32, // Number of output channels the playback device supports
     pub rec_input_device: String,    // ALSA input device for recording
     pub rec_channel_count: u32,      // Number of channels to record
+    pub rec_sample_rate: u32,        // Sample rate for recording (e.g. 44100, 48000, 96000, 192000)
+    pub rec_bit_depth: u16,          // Bit depth for recording (16, 24, or 32)
     pub mon_output_device: String, // ALSA output device for monitoring (should match playback card)
     pub is_monitoring: bool,
 }
@@ -64,7 +73,7 @@ impl Default for App {
             loop_mode: LoopMode::LoopSingle,
             volume: 100,     // Start at 100%
             max_volume: 100, // 100% of original audio level
-            autoplay: false, // Disabled by default
+            auto_mode: AutoMode::Off,
             current_position: None,
             track_duration: None,
             channel_levels: vec![],
@@ -81,6 +90,8 @@ impl Default for App {
             playback_channel_count: 8,
             rec_input_device: "hw:0,0".to_string(),
             rec_channel_count: 8,
+            rec_sample_rate: 192_000,
+            rec_bit_depth: 32,
             mon_output_device: "hw:0,0".to_string(),
             is_monitoring: false,
         }
@@ -100,6 +111,7 @@ impl App {
 
     /// Set running to false to quit the application.
     pub fn quit(&mut self) {
+        let _ = self.save_config();
         self.running = false;
     }
 
@@ -137,8 +149,12 @@ impl App {
         };
     }
 
-    pub fn toggle_autoplay(&mut self) {
-        self.autoplay = !self.autoplay;
+    pub fn cycle_auto_mode(&mut self) {
+        self.auto_mode = match self.auto_mode {
+            AutoMode::Off => AutoMode::Play,
+            AutoMode::Play => AutoMode::Rec,
+            AutoMode::Rec => AutoMode::Off,
+        };
         let _ = self.save_config();
     }
 
@@ -437,14 +453,16 @@ impl App {
 
         let input_device = self.rec_input_device.clone();
         let channel_count = self.rec_channel_count;
+        let sample_rate = self.rec_sample_rate;
+        let bit_depth = self.rec_bit_depth;
         self.audio_player
-            .start_recording(&output_path, &input_device, channel_count)?;
+            .start_recording(&output_path, &input_device, channel_count, sample_rate, bit_depth)?;
         // If monitoring was active, re-enable it on the new capture session.
         if self.is_monitoring {
             let output_device = self.mon_output_device.clone();
             let _ =
                 self.audio_player
-                    .start_monitoring(&input_device, &output_device, channel_count);
+                    .start_monitoring(&input_device, &output_device, channel_count, sample_rate, bit_depth);
         }
         self.is_recording = true;
         self.recording_start_time = Some(Instant::now());
@@ -468,7 +486,7 @@ impl App {
             let channel_count = self.rec_channel_count;
             let _ =
                 self.audio_player
-                    .start_monitoring(&input_device, &output_device, channel_count);
+                    .start_monitoring(&input_device, &output_device, channel_count, self.rec_sample_rate, self.rec_bit_depth);
         }
 
         let saved_path = self.recording_path.take();
@@ -568,7 +586,7 @@ impl App {
         let channel_count = self.rec_channel_count;
         self.channel_levels = vec![-60.0; channel_count as usize];
         self.audio_player
-            .start_monitoring(&input_device, &output_device, channel_count)?;
+            .start_monitoring(&input_device, &output_device, channel_count, self.rec_sample_rate, self.rec_bit_depth)?;
         self.is_monitoring = true;
         Ok(())
     }
@@ -608,8 +626,15 @@ impl App {
             if let Some(max_volume) = config["max_volume"].as_u64() {
                 self.max_volume = max_volume as u8;
             }
-            if let Some(autoplay) = config["autoplay"].as_bool() {
-                self.autoplay = autoplay;
+            if let Some(auto_mode) = config["auto_mode"].as_str() {
+                self.auto_mode = match auto_mode {
+                    "play" => AutoMode::Play,
+                    "rec" => AutoMode::Rec,
+                    _ => AutoMode::Off,
+                };
+            } else if let Some(autoplay) = config["autoplay"].as_bool() {
+                // Backwards compat with old config
+                self.auto_mode = if autoplay { AutoMode::Play } else { AutoMode::Off };
             }
             if let Some(eq_bands) = config["eq_bands"].as_array() {
                 for (i, val) in eq_bands.iter().enumerate() {
@@ -635,6 +660,15 @@ impl App {
             if let Some(rec_channel_count) = config["rec_channel_count"].as_u64() {
                 self.rec_channel_count = rec_channel_count as u32;
             }
+            if let Some(rec_sample_rate) = config["rec_sample_rate"].as_u64() {
+                self.rec_sample_rate = rec_sample_rate as u32;
+            }
+            if let Some(rec_bit_depth) = config["rec_bit_depth"].as_u64() {
+                let bd = rec_bit_depth as u16;
+                if bd == 16 || bd == 24 || bd == 32 {
+                    self.rec_bit_depth = bd;
+                }
+            }
             if let Some(mon_output_device) = config["mon_output_device"].as_str() {
                 self.mon_output_device = mon_output_device.to_string();
             }
@@ -655,13 +689,19 @@ impl App {
         let config = json!({
             "volume": self.volume,
             "max_volume": self.max_volume,
-            "autoplay": self.autoplay,
+            "auto_mode": match self.auto_mode {
+                AutoMode::Off => "off",
+                AutoMode::Play => "play",
+                AutoMode::Rec => "rec",
+            },
             "eq_bands": eq_bands_vec,
             "eq_enabled": self.eq_enabled,
             "playback_device": self.playback_device,
             "playback_channel_count": self.playback_channel_count,
             "rec_input_device": self.rec_input_device,
             "rec_channel_count": self.rec_channel_count,
+            "rec_sample_rate": self.rec_sample_rate,
+            "rec_bit_depth": self.rec_bit_depth,
             "mon_output_device": self.mon_output_device,
         });
 
