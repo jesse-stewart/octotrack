@@ -166,7 +166,13 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         let elapsed = app.recording_elapsed();
         let min = (elapsed / 60.0) as u32;
         let sec = (elapsed % 60.0) as u32;
-        format!("\u{25cf} REC {:02}:{:02}", min, sec)
+        let bytes = app.recording_file_bytes();
+        let size_str = if bytes >= 1_073_741_824 {
+            format!("{:.1} GiB", bytes as f64 / 1_073_741_824.0)
+        } else {
+            format!("{:.0} MiB", bytes as f64 / 1_048_576.0)
+        };
+        format!("\u{25cf} REC {:02}:{:02}\n  {}", min, sec, size_str)
     } else if app.is_monitoring {
         format!(
             "\u{25cf} MON {} ({}ch)",

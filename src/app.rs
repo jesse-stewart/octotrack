@@ -20,6 +20,12 @@ pub enum AutoMode {
     Rec,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RecMaxMode {
+    Stop,
+    Drop,
+}
+
 /// Application.
 pub struct App {
     /// Is the application running?
@@ -54,6 +60,9 @@ pub struct App {
     pub rec_channel_count: u32,      // Number of channels to record
     pub rec_sample_rate: u32,        // Sample rate for recording (e.g. 44100, 48000, 96000, 192000)
     pub rec_bit_depth: u16,          // Bit depth for recording (16, 24, or 32)
+    pub rec_max_file_mb: u64,          // Max recording file size in MB (0 = unlimited)
+    pub rec_max_file_mode: RecMaxMode, // What to do when max size is reached
+    pub rec_min_free_mb: u64,          // Stop/drop when free disk space drops below this (MB)
     pub mon_output_device: String, // ALSA output device for monitoring (should match playback card)
     pub is_monitoring: bool,
 }
@@ -92,6 +101,9 @@ impl Default for App {
             rec_channel_count: 8,
             rec_sample_rate: 192_000,
             rec_bit_depth: 32,
+            rec_max_file_mb: 0, // 0 = unlimited
+            rec_max_file_mode: RecMaxMode::Stop,
+            rec_min_free_mb: 1024, // 1 GB safety margin
             mon_output_device: "hw:0,0".to_string(),
             is_monitoring: false,
         }
@@ -455,8 +467,15 @@ impl App {
         let channel_count = self.rec_channel_count;
         let sample_rate = self.rec_sample_rate;
         let bit_depth = self.rec_bit_depth;
+        let max_data_bytes = if self.rec_max_file_mb > 0 {
+            Some(self.rec_max_file_mb * 1024 * 1024)
+        } else {
+            None
+        };
+        let drop_mode = self.rec_max_file_mode == RecMaxMode::Drop;
+        let min_free_bytes = self.rec_min_free_mb * 1024 * 1024;
         self.audio_player
-            .start_recording(&output_path, &input_device, channel_count, sample_rate, bit_depth)?;
+            .start_recording(&output_path, &input_device, channel_count, sample_rate, bit_depth, max_data_bytes, drop_mode, min_free_bytes)?;
         // If monitoring was active, re-enable it on the new capture session.
         if self.is_monitoring {
             let output_device = self.mon_output_device.clone();
@@ -515,6 +534,10 @@ impl App {
         self.recording_start_time
             .map(|t| t.elapsed().as_secs_f32())
             .unwrap_or(0.0)
+    }
+
+    pub fn recording_file_bytes(&self) -> u64 {
+        *self.audio_player.capture_recording_bytes.lock().unwrap()
     }
 
     pub fn check_playback_status(&mut self) {
@@ -669,6 +692,18 @@ impl App {
                     self.rec_bit_depth = bd;
                 }
             }
+            if let Some(rec_max_file_mb) = config["rec_max_file_mb"].as_u64() {
+                self.rec_max_file_mb = rec_max_file_mb;
+            }
+            if let Some(rec_max_file_mode) = config["rec_max_file_mode"].as_str() {
+                self.rec_max_file_mode = match rec_max_file_mode {
+                    "drop" => RecMaxMode::Drop,
+                    _ => RecMaxMode::Stop,
+                };
+            }
+            if let Some(rec_min_free_mb) = config["rec_min_free_mb"].as_u64() {
+                self.rec_min_free_mb = rec_min_free_mb;
+            }
             if let Some(mon_output_device) = config["mon_output_device"].as_str() {
                 self.mon_output_device = mon_output_device.to_string();
             }
@@ -702,6 +737,12 @@ impl App {
             "rec_channel_count": self.rec_channel_count,
             "rec_sample_rate": self.rec_sample_rate,
             "rec_bit_depth": self.rec_bit_depth,
+            "rec_max_file_mb": self.rec_max_file_mb,
+            "rec_max_file_mode": match self.rec_max_file_mode {
+                RecMaxMode::Stop => "stop",
+                RecMaxMode::Drop => "drop",
+            },
+            "rec_min_free_mb": self.rec_min_free_mb,
             "mon_output_device": self.mon_output_device,
         });
 

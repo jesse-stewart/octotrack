@@ -68,6 +68,7 @@ pub struct AudioPlayer {
     // Shared with the capture thread. Set Some(stdin) to route audio to aplay.
     capture_monitor_sink: Arc<Mutex<Option<ChildStdin>>>,
     capture_is_recording: bool,
+    pub capture_recording_bytes: Arc<Mutex<u64>>,
 }
 
 impl Default for AudioPlayer {
@@ -93,6 +94,7 @@ impl AudioPlayer {
             capture_thread: None,
             capture_monitor_sink: Arc::new(Mutex::new(None)),
             capture_is_recording: false,
+            capture_recording_bytes: Arc::new(Mutex::new(0)),
         }
     }
 
@@ -605,10 +607,13 @@ impl AudioPlayer {
         channel_count: u32,
         sample_rate: u32,
         bit_depth: u16,
+        max_data_bytes: Option<u64>,
+        drop_mode: bool,
+        min_free_bytes: u64,
     ) -> io::Result<()> {
         log(&format!(
-            "start_recording: device={} channels={} rate={} bits={} path={:?}",
-            input_device, channel_count, sample_rate, bit_depth, output_path
+            "start_recording: device={} channels={} rate={} bits={} max={:?} drop={} min_free={} path={:?}",
+            input_device, channel_count, sample_rate, bit_depth, max_data_bytes, drop_mode, min_free_bytes, output_path
         ));
         self.stop_capture()?;
 
@@ -616,7 +621,7 @@ impl AudioPlayer {
             std::fs::create_dir_all(parent)?;
         }
         *self.channel_levels.lock().unwrap() = vec![-60.0; channel_count as usize];
-        self.start_capture_internal(input_device, channel_count, sample_rate, bit_depth, Some(output_path.clone()), None)?;
+        self.start_capture_internal(input_device, channel_count, sample_rate, bit_depth, Some(output_path.clone()), None, max_data_bytes, drop_mode, min_free_bytes)?;
         self.capture_is_recording = true;
         Ok(())
     }
@@ -668,7 +673,7 @@ impl AudioPlayer {
         // No active capture — start a monitoring-only session.
         self.stop_capture()?;
         *self.channel_levels.lock().unwrap() = vec![-60.0; channel_count as usize];
-        self.start_capture_internal(input_device, channel_count, sample_rate, bit_depth, None, Some(output_device))
+        self.start_capture_internal(input_device, channel_count, sample_rate, bit_depth, None, Some(output_device), None, false, 0)
     }
 
     pub fn stop_monitoring(&mut self) -> io::Result<()> {
@@ -785,6 +790,9 @@ impl AudioPlayer {
         bit_depth: u16,
         wav_path: Option<PathBuf>,
         monitor_output: Option<&str>,
+        max_data_bytes: Option<u64>,
+        drop_mode: bool,
+        min_free_bytes: u64,
     ) -> io::Result<()> {
         let mut arecord = Command::new("arecord")
             .arg("-D")
@@ -855,10 +863,12 @@ impl AudioPlayer {
 
         let levels = Arc::clone(&self.channel_levels);
         let monitor_sink = Arc::clone(&self.capture_monitor_sink);
+        let recording_bytes = Arc::clone(&self.capture_recording_bytes);
+        *recording_bytes.lock().unwrap() = 0;
         let ch = channel_count as usize;
 
         let handle = thread::spawn(move || {
-            capture_and_analyse(stdout, wav_path, monitor_sink, ch, sample_rate, bit_depth, levels);
+            capture_and_analyse(stdout, wav_path, monitor_sink, ch, sample_rate, bit_depth, levels, max_data_bytes, drop_mode, recording_bytes, min_free_bytes);
         });
 
         self.capture_arecord = Some(arecord);
@@ -893,6 +903,20 @@ impl AudioPlayer {
 /// - If `wav_path` is Some, writes a WAV file (header finalised on EOF).
 /// - If `monitor_sink` contains Some(stdin), routes audio to aplay; clears on broken pipe.
 /// - Updates `levels` with per-channel RMS in dB.
+fn free_bytes_on_path(path: &PathBuf) -> Option<u64> {
+    use std::ffi::CString;
+    let dir = path.parent().unwrap_or(path);
+    let cpath = CString::new(dir.to_string_lossy().as_bytes()).ok()?;
+    unsafe {
+        let mut stat: libc::statvfs = std::mem::zeroed();
+        if libc::statvfs(cpath.as_ptr(), &mut stat) == 0 {
+            Some(stat.f_bavail as u64 * stat.f_frsize as u64)
+        } else {
+            None
+        }
+    }
+}
+
 fn capture_and_analyse<R: Read>(
     mut reader: R,
     wav_path: Option<PathBuf>,
@@ -901,6 +925,10 @@ fn capture_and_analyse<R: Read>(
     sample_rate: u32,
     bit_depth: u16,
     levels: Arc<Mutex<Vec<f32>>>,
+    max_data_bytes: Option<u64>,
+    drop_mode: bool,
+    recording_bytes: Arc<Mutex<u64>>,
+    min_free_bytes: u64,
 ) {
     let bps = bytes_per_sample(bit_depth);
     let frame_size = channels * bps;
@@ -968,27 +996,142 @@ fn capture_and_analyse<R: Read>(
         Ok(())
     };
 
+    // Max data size in bytes (after header). Align to frame boundary.
+    // max_data is mutable — disk space guard can lower it dynamically.
+    let mut max_data: Option<u64> = max_data_bytes.map(|m| {
+        let m = m.saturating_sub(HEADER_SIZE);
+        (m / frame_size as u64) * frame_size as u64 // align to frame
+    });
+
     // Open WAV file if recording — write placeholder header.
+    // Must be read+write so drop mode can read back data during linearization.
     let mut wav: Option<(File, u64)> = wav_path.as_ref().and_then(|path| {
-        File::create(path)
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(path)
             .ok()
             .and_then(|mut f| write_header(&mut f, 0).ok().map(|_| (f, 0u64)))
     });
+
+    // Circular buffer state for drop mode.
+    // `total` = total data bytes written so far (may exceed max in drop mode due to wrapping).
+    // `write_offset` = current file offset for the next write.
+    // `wrapped` = whether we have wrapped around at least once.
+    let mut write_offset: u64 = HEADER_SIZE;
+    let mut wrapped = false;
+    // `logical_bytes` = how many bytes of real audio are in the file (capped at max_data).
+    let mut logical_bytes: u64 = 0;
 
     let window_frames: usize = (sample_rate / 10) as usize; // 100 ms
     let mut ch_bufs: Vec<Vec<f32>> = vec![vec![]; channels];
     let mut cur_levels = vec![-60.0f32; channels];
     let buf_size = frame_size * 4096;
     let mut buf = vec![0u8; buf_size];
+    let mut stopped_by_limit = false;
+    let mut bytes_since_free_check: u64 = 0;
+    const FREE_CHECK_INTERVAL: u64 = 4 * 1024 * 1024; // check every 4 MB written
 
     loop {
         match reader.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
                 // Write to WAV file.
-                if let Some((ref mut file, ref mut total)) = wav {
-                    if file.write_all(&buf[..n]).is_ok() {
-                        *total += n as u64;
+                if let Some((ref mut file, ref mut _total)) = wav {
+                    let data = &buf[..n];
+                    let mut written = 0usize;
+
+                    while written < data.len() {
+                        let chunk = &data[written..];
+
+                        if let Some(max) = max_data {
+                            if !drop_mode {
+                                // Stop mode: check if we'd exceed the limit.
+                                let remaining = max.saturating_sub(logical_bytes);
+                                if remaining == 0 {
+                                    stopped_by_limit = true;
+                                    break;
+                                }
+                                let to_write = chunk.len().min(remaining as usize);
+                                if file.write_all(&chunk[..to_write]).is_ok() {
+                                    logical_bytes += to_write as u64;
+                                    write_offset += to_write as u64;
+                                }
+                                written += to_write;
+                            } else {
+                                // Drop mode: circular write within the data region.
+                                let data_end = HEADER_SIZE + max;
+                                let space_to_end = (data_end - write_offset) as usize;
+                                let to_write = chunk.len().min(space_to_end);
+
+                                let _ = file.seek(SeekFrom::Start(write_offset));
+                                if file.write_all(&chunk[..to_write]).is_ok() {
+                                    write_offset += to_write as u64;
+                                    logical_bytes = (logical_bytes + to_write as u64).min(max);
+                                    written += to_write;
+                                } else {
+                                    break;
+                                }
+
+                                // Wrap around if we hit the end of the data region.
+                                if write_offset >= data_end {
+                                    write_offset = HEADER_SIZE;
+                                    wrapped = true;
+                                }
+                            }
+                        } else {
+                            // Unlimited: simple sequential write.
+                            if file.write_all(chunk).is_ok() {
+                                logical_bytes += chunk.len() as u64;
+                                write_offset += chunk.len() as u64;
+                            }
+                            written = data.len();
+                        }
+                    }
+
+                    // Update shared byte counter for UI.
+                    if let Ok(mut g) = recording_bytes.lock() {
+                        *g = logical_bytes;
+                    }
+
+                    if stopped_by_limit {
+                        break;
+                    }
+
+                    // Disk space guard: check periodically.
+                    // In drop mode, locks the current file size as the circular cap.
+                    // In stop mode, stops the recording.
+                    if min_free_bytes > 0 {
+                        bytes_since_free_check += n as u64;
+                        if bytes_since_free_check >= FREE_CHECK_INTERVAL {
+                            bytes_since_free_check = 0;
+                            if let Some(path) = &wav_path {
+                                if let Some(free) = free_bytes_on_path(path) {
+                                    if free < min_free_bytes {
+                                        if !drop_mode {
+                                            log(&format!(
+                                                "capture_and_analyse: disk space low ({} bytes free), stopping",
+                                                free
+                                            ));
+                                            stopped_by_limit = true;
+                                            break;
+                                        } else if !wrapped {
+                                            // Lock current size as the circular buffer cap.
+                                            let aligned = (logical_bytes / frame_size as u64) * frame_size as u64;
+                                            if max_data.map_or(true, |m| aligned < m) {
+                                                log(&format!(
+                                                    "capture_and_analyse: disk space low ({} bytes free), capping at {} bytes and looping",
+                                                    free, aligned
+                                                ));
+                                                max_data = Some(aligned);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 // Write to monitoring output; clear on broken pipe.
@@ -1057,13 +1200,69 @@ fn capture_and_analyse<R: Read>(
         }
     }
 
-    // Finalise header (WAV or RF64 depending on size).
-    if let Some((mut file, total_bytes)) = wav {
-        let _ = write_header(&mut file, total_bytes);
-        let fmt = if total_bytes > MAX_WAV_DATA { "RF64" } else { "WAV" };
+    // Finalise: if drop mode wrapped, linearize the circular buffer.
+    if let Some((mut file, _)) = wav {
+        if drop_mode && wrapped {
+            if let Some(max) = max_data {
+                // The write_offset is where the oldest data starts (it's the next write position).
+                // Data order: [write_offset .. HEADER_SIZE+max] then [HEADER_SIZE .. write_offset]
+                let data_end = HEADER_SIZE + max;
+                let path = wav_path.as_ref().unwrap();
+                let tmp_path = path.with_extension("wav.tmp");
+
+                if let Ok(mut tmp) = File::create(&tmp_path) {
+                    // Write header to temp file.
+                    let _ = write_header(&mut tmp, logical_bytes);
+
+                    // Copy: oldest data first (from write_offset to end of data region).
+                    let mut copy_buf = vec![0u8; 64 * 1024];
+                    let mut pos = write_offset;
+                    while pos < data_end {
+                        let to_read = copy_buf.len().min((data_end - pos) as usize);
+                        let _ = file.seek(SeekFrom::Start(pos));
+                        if let Ok(n) = file.read(&mut copy_buf[..to_read]) {
+                            if n == 0 { break; }
+                            let _ = tmp.write_all(&copy_buf[..n]);
+                            pos += n as u64;
+                        } else {
+                            break;
+                        }
+                    }
+
+                    // Copy: newest data (from HEADER_SIZE to write_offset).
+                    pos = HEADER_SIZE;
+                    while pos < write_offset {
+                        let to_read = copy_buf.len().min((write_offset - pos) as usize);
+                        let _ = file.seek(SeekFrom::Start(pos));
+                        if let Ok(n) = file.read(&mut copy_buf[..to_read]) {
+                            if n == 0 { break; }
+                            let _ = tmp.write_all(&copy_buf[..n]);
+                            pos += n as u64;
+                        } else {
+                            break;
+                        }
+                    }
+
+                    drop(tmp);
+                    drop(file);
+                    let _ = std::fs::rename(&tmp_path, path);
+                    log(&format!(
+                        "capture_and_analyse: linearized circular buffer, {} bytes",
+                        logical_bytes
+                    ));
+                    return;
+                }
+            }
+        }
+
+        // Normal finalize (no wrap, or unlimited, or stop mode).
+        let _ = write_header(&mut file, logical_bytes);
+        let fmt = if logical_bytes > MAX_WAV_DATA { "RF64" } else { "WAV" };
         log(&format!(
-            "capture_and_analyse: {} bytes written as {}",
-            total_bytes, fmt
+            "capture_and_analyse: {} bytes written as {}{}",
+            logical_bytes,
+            fmt,
+            if stopped_by_limit { " (stopped at limit)" } else { "" }
         ));
     }
 }
