@@ -417,10 +417,11 @@ impl App {
                 .arg("json")
                 .arg(&first_file)
                 .output()
-                .unwrap()
-                .stdout;
+                .map(|o| o.stdout)
+                .unwrap_or_default();
             let meta_info: std::borrow::Cow<str> = String::from_utf8_lossy(&meta_info);
-            let meta_info: serde_json::Value = serde_json::from_str(&meta_info).unwrap();
+            let meta_info: serde_json::Value =
+                serde_json::from_str(&meta_info).unwrap_or(serde_json::Value::Null);
 
             let channels_per_file =
                 meta_info["streams"][0]["channels"].as_u64().unwrap_or(1) as u32;
@@ -463,10 +464,11 @@ impl App {
                 .arg("json")
                 .arg(track_path)
                 .output()
-                .unwrap()
-                .stdout;
+                .map(|o| o.stdout)
+                .unwrap_or_default();
             let meta_info: std::borrow::Cow<str> = String::from_utf8_lossy(&meta_info);
-            let meta_info: serde_json::Value = serde_json::from_str(&meta_info).unwrap();
+            let meta_info: serde_json::Value =
+                serde_json::from_str(&meta_info).unwrap_or(serde_json::Value::Null);
 
             // Use filename without extension as fallback
             let fallback_title = track_path
@@ -826,6 +828,81 @@ impl App {
         Ok(())
     }
 
+    #[cfg(test)]
+    fn load_config_from_value(&mut self, config: &Value) {
+        if let Some(volume) = config["volume"].as_u64() {
+            self.volume = volume as u8;
+        }
+        if let Some(max_volume) = config["max_volume"].as_u64() {
+            self.max_volume = max_volume as u8;
+        }
+        if let Some(auto_mode) = config["auto_mode"].as_str() {
+            self.auto_mode = match auto_mode {
+                "play" => AutoMode::Play,
+                "rec" => AutoMode::Rec,
+                _ => AutoMode::Off,
+            };
+        }
+        if let Some(eq_bands) = config["eq_bands"].as_array() {
+            for (i, val) in eq_bands.iter().enumerate() {
+                if i < 10 {
+                    if let Some(v) = val.as_i64() {
+                        self.eq_bands[i] = (v as i8).clamp(-12, 12);
+                    }
+                }
+            }
+        }
+        if let Some(eq_enabled) = config["eq_enabled"].as_bool() {
+            self.eq_enabled = eq_enabled;
+        }
+        if let Some(playback_device) = config["playback_device"].as_str() {
+            self.playback_device = playback_device.to_string();
+        }
+        if let Some(playback_channel_count) = config["playback_channel_count"].as_u64() {
+            self.playback_channel_count = playback_channel_count as u32;
+        }
+        if let Some(rec_input_device) = config["rec_input_device"].as_str() {
+            self.rec_input_device = rec_input_device.to_string();
+        }
+        if let Some(rec_channel_count) = config["rec_channel_count"].as_u64() {
+            self.rec_channel_count = rec_channel_count as u32;
+        }
+        if let Some(rec_sample_rate) = config["rec_sample_rate"].as_u64() {
+            self.rec_sample_rate = rec_sample_rate as u32;
+        }
+        if let Some(rec_bit_depth) = config["rec_bit_depth"].as_u64() {
+            let bd = rec_bit_depth as u16;
+            if bd == 16 || bd == 24 || bd == 32 {
+                self.rec_bit_depth = bd;
+            }
+        }
+        if let Some(rec_max_file_mb) = config["rec_max_file_mb"].as_u64() {
+            self.rec_max_file_mb = rec_max_file_mb;
+        }
+        if let Some(rec_max_file_mode) = config["rec_max_file_mode"].as_str() {
+            self.rec_max_file_mode = match rec_max_file_mode {
+                "drop" => RecMaxMode::Drop,
+                _ => RecMaxMode::Stop,
+            };
+        }
+        if let Some(rec_min_free_mb) = config["rec_min_free_mb"].as_u64() {
+            self.rec_min_free_mb = rec_min_free_mb;
+        }
+        if let Some(rec_split_file_mb) = config["rec_split_file_mb"].as_u64() {
+            self.rec_split_file_mb = rec_split_file_mb;
+        }
+        if let Some(loop_mode) = config["loop_mode"].as_str() {
+            self.loop_mode = match loop_mode {
+                "single" => LoopMode::LoopSingle,
+                "all" => LoopMode::LoopAll,
+                _ => LoopMode::NoLoop,
+            };
+        }
+        if let Some(start_track) = config["start_track"].as_str() {
+            self.start_track = start_track.to_string();
+        }
+    }
+
     pub fn save_config(&self) -> AppResult<()> {
         let config_path = Self::get_config_path();
 
@@ -870,5 +947,285 @@ impl App {
         fs::write(config_path, serde_json::to_string_pretty(&config)?)?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Create an App without loading config from disk.
+    fn test_app() -> App {
+        App::default()
+    }
+
+    // -----------------------------------------------------------------------
+    // Loop mode cycling
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn toggle_loop_mode_cycles() {
+        let mut app = test_app();
+        assert_eq!(app.loop_mode, LoopMode::LoopSingle);
+        app.toggle_loop_mode();
+        assert_eq!(app.loop_mode, LoopMode::LoopAll);
+        app.toggle_loop_mode();
+        assert_eq!(app.loop_mode, LoopMode::NoLoop);
+        app.toggle_loop_mode();
+        assert_eq!(app.loop_mode, LoopMode::LoopSingle);
+    }
+
+    // -----------------------------------------------------------------------
+    // Auto mode cycling
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cycle_auto_mode_cycles() {
+        let mut app = test_app();
+        assert_eq!(app.auto_mode, AutoMode::Off);
+        app.cycle_auto_mode();
+        assert_eq!(app.auto_mode, AutoMode::Play);
+        app.cycle_auto_mode();
+        assert_eq!(app.auto_mode, AutoMode::Rec);
+        app.cycle_auto_mode();
+        assert_eq!(app.auto_mode, AutoMode::Off);
+    }
+
+    // -----------------------------------------------------------------------
+    // Volume
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn volume_clamps_at_100() {
+        let mut app = test_app();
+        app.volume = 100;
+        app.increase_volume();
+        assert_eq!(app.volume, 100);
+    }
+
+    #[test]
+    fn volume_clamps_at_0() {
+        let mut app = test_app();
+        app.volume = 0;
+        app.decrease_volume();
+        assert_eq!(app.volume, 0);
+    }
+
+    #[test]
+    fn volume_increments() {
+        let mut app = test_app();
+        app.volume = 50;
+        app.increase_volume();
+        assert_eq!(app.volume, 51);
+        app.decrease_volume();
+        assert_eq!(app.volume, 50);
+    }
+
+    // -----------------------------------------------------------------------
+    // EQ
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn eq_select_wraps_at_bounds() {
+        let mut app = test_app();
+        assert_eq!(app.eq_selected_band, 0);
+        app.eq_select_prev();
+        assert_eq!(app.eq_selected_band, 0); // stays at 0
+
+        app.eq_selected_band = 9;
+        app.eq_select_next();
+        assert_eq!(app.eq_selected_band, 9); // stays at 9
+    }
+
+    #[test]
+    fn eq_band_clamps_at_bounds() {
+        let mut app = test_app();
+        app.eq_selected_band = 0;
+        for _ in 0..20 {
+            app.eq_increase_band();
+        }
+        assert_eq!(app.eq_bands[0], 12);
+
+        for _ in 0..30 {
+            app.eq_decrease_band();
+        }
+        assert_eq!(app.eq_bands[0], -12);
+    }
+
+    #[test]
+    fn eq_toggle() {
+        let mut app = test_app();
+        assert!(app.eq_enabled);
+        app.toggle_eq_enabled();
+        assert!(!app.eq_enabled);
+        app.toggle_eq_enabled();
+        assert!(app.eq_enabled);
+    }
+
+    #[test]
+    fn eq_view_toggle() {
+        let mut app = test_app();
+        assert!(!app.show_eq);
+        app.toggle_eq_view();
+        assert!(app.show_eq);
+        app.toggle_eq_view();
+        assert!(!app.show_eq);
+    }
+
+    // -----------------------------------------------------------------------
+    // Track navigation (no audio)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn increment_track_no_wrap_without_loop_all() {
+        let mut app = test_app();
+        app.loop_mode = LoopMode::NoLoop;
+        app.track_list = vec![
+            PathBuf::from("a.wav"),
+            PathBuf::from("b.wav"),
+            PathBuf::from("c.wav"),
+        ];
+        app.current_track_index = 2;
+        app.increment_track();
+        assert_eq!(app.current_track_index, 2); // stays at end
+    }
+
+    #[test]
+    fn increment_track_wraps_with_loop_all() {
+        let mut app = test_app();
+        app.loop_mode = LoopMode::LoopAll;
+        app.track_list = vec![PathBuf::from("a.wav"), PathBuf::from("b.wav")];
+        app.current_track_index = 1;
+        app.increment_track();
+        assert_eq!(app.current_track_index, 0);
+    }
+
+    #[test]
+    fn decrement_track_wraps_with_loop_all() {
+        let mut app = test_app();
+        app.loop_mode = LoopMode::LoopAll;
+        app.track_list = vec![
+            PathBuf::from("a.wav"),
+            PathBuf::from("b.wav"),
+            PathBuf::from("c.wav"),
+        ];
+        app.current_track_index = 0;
+        app.decrement_track();
+        assert_eq!(app.current_track_index, 2);
+    }
+
+    #[test]
+    fn decrement_track_stays_at_zero() {
+        let mut app = test_app();
+        app.loop_mode = LoopMode::NoLoop;
+        app.track_list = vec![PathBuf::from("a.wav")];
+        app.current_track_index = 0;
+        app.decrement_track();
+        assert_eq!(app.current_track_index, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Quit
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn quit_sets_running_false() {
+        let mut app = test_app();
+        assert!(app.running);
+        app.quit();
+        assert!(!app.running);
+    }
+
+    // -----------------------------------------------------------------------
+    // Config loading from JSON value
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn load_config_from_value_applies_all_fields() {
+        let mut app = test_app();
+        let config = json!({
+            "volume": 75,
+            "max_volume": 80,
+            "auto_mode": "rec",
+            "eq_bands": [1, 2, 3, 4, 5, -1, -2, -3, -4, -5],
+            "eq_enabled": false,
+            "playback_device": "hw:1,0",
+            "playback_channel_count": 2,
+            "rec_input_device": "hw:2,0",
+            "rec_channel_count": 4,
+            "rec_sample_rate": 96000,
+            "rec_bit_depth": 24,
+            "rec_max_file_mb": 4000,
+            "rec_max_file_mode": "drop",
+            "rec_min_free_mb": 2048,
+            "rec_split_file_mb": 3900,
+            "loop_mode": "all",
+            "start_track": "my_song"
+        });
+        app.load_config_from_value(&config);
+
+        assert_eq!(app.volume, 75);
+        assert_eq!(app.max_volume, 80);
+        assert_eq!(app.auto_mode, AutoMode::Rec);
+        assert_eq!(app.eq_bands, [1, 2, 3, 4, 5, -1, -2, -3, -4, -5]);
+        assert!(!app.eq_enabled);
+        assert_eq!(app.playback_device, "hw:1,0");
+        assert_eq!(app.playback_channel_count, 2);
+        assert_eq!(app.rec_input_device, "hw:2,0");
+        assert_eq!(app.rec_channel_count, 4);
+        assert_eq!(app.rec_sample_rate, 96000);
+        assert_eq!(app.rec_bit_depth, 24);
+        assert_eq!(app.rec_max_file_mb, 4000);
+        assert_eq!(app.rec_max_file_mode, RecMaxMode::Drop);
+        assert_eq!(app.rec_min_free_mb, 2048);
+        assert_eq!(app.rec_split_file_mb, 3900);
+        assert_eq!(app.loop_mode, LoopMode::LoopAll);
+        assert_eq!(app.start_track, "my_song");
+    }
+
+    #[test]
+    fn load_config_ignores_invalid_bit_depth() {
+        let mut app = test_app();
+        let config = json!({ "rec_bit_depth": 20 });
+        app.load_config_from_value(&config);
+        assert_eq!(app.rec_bit_depth, 32); // unchanged from default
+    }
+
+    #[test]
+    fn load_config_clamps_eq_bands() {
+        let mut app = test_app();
+        let config = json!({ "eq_bands": [99, -99, 0, 0, 0, 0, 0, 0, 0, 0] });
+        app.load_config_from_value(&config);
+        assert_eq!(app.eq_bands[0], 12);
+        assert_eq!(app.eq_bands[1], -12);
+    }
+
+    #[test]
+    fn load_config_partial_preserves_defaults() {
+        let mut app = test_app();
+        let config = json!({ "volume": 42 });
+        app.load_config_from_value(&config);
+        assert_eq!(app.volume, 42);
+        assert_eq!(app.rec_sample_rate, 192_000); // default preserved
+    }
+
+    // -----------------------------------------------------------------------
+    // Defaults
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn default_values() {
+        let app = test_app();
+        assert!(app.running);
+        assert!(!app.is_playing);
+        assert!(!app.is_recording);
+        assert!(!app.is_monitoring);
+        assert_eq!(app.volume, 100);
+        assert_eq!(app.loop_mode, LoopMode::LoopSingle);
+        assert_eq!(app.auto_mode, AutoMode::Off);
+        assert_eq!(app.eq_bands, [0; 10]);
+        assert!(app.eq_enabled);
+        assert_eq!(app.rec_bit_depth, 32);
+        assert_eq!(app.rec_sample_rate, 192_000);
     }
 }

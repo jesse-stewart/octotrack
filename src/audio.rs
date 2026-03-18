@@ -9,6 +9,11 @@ use std::time::Instant;
 #[cfg(unix)]
 extern crate libc;
 
+/// WAV header is always exactly 80 bytes (standard WAV with JUNK pad, or RF64 with ds64).
+const HEADER_SIZE: u64 = 80;
+/// Maximum data bytes that fit in a standard WAV (u32 size field minus the 36-byte overhead).
+const MAX_WAV_DATA: u64 = u32::MAX as u64 - 36;
+
 fn alsa_format(bit_depth: u16) -> &'static str {
     match bit_depth {
         16 => "S16_LE",
@@ -72,6 +77,109 @@ fn open_wav_file(
     f.write_all(b"data")?;
     f.write_all(&0u32.to_le_bytes())?;
     Ok(f)
+}
+
+/// Repair a WAV file whose header under-reports the actual data size (e.g. after
+/// a crash or power loss).  Reads the file size, compares it to the header's
+/// claimed data length, and rewrites the header if the file is larger.
+fn repair_wav_header(path: &Path) -> io::Result<bool> {
+    let meta = std::fs::metadata(path)?;
+    let file_size = meta.len();
+    if file_size <= HEADER_SIZE {
+        return Ok(false);
+    }
+
+    let mut f = OpenOptions::new().read(true).write(true).open(path)?;
+    let mut magic = [0u8; 4];
+    f.read_exact(&mut magic)?;
+    if &magic != b"RIFF" && &magic != b"RF64" {
+        return Ok(false);
+    }
+
+    let actual_data = file_size - HEADER_SIZE;
+
+    // Read claimed data size from header.
+    let claimed_data = if &magic == b"RF64" {
+        // ds64 dataSize is at offset 40 (8 bytes).
+        f.seek(SeekFrom::Start(40))?;
+        let mut buf = [0u8; 8];
+        f.read_exact(&mut buf)?;
+        u64::from_le_bytes(buf)
+    } else {
+        // Standard WAV: data chunk size at offset 76 (4 bytes).
+        f.seek(SeekFrom::Start(76))?;
+        let mut buf = [0u8; 4];
+        f.read_exact(&mut buf)?;
+        u32::from_le_bytes(buf) as u64
+    };
+
+    if actual_data <= claimed_data {
+        return Ok(false);
+    }
+
+    // Read fmt chunk fields (channels, sample_rate, byte_rate, block_align, bit_depth)
+    // starting at offset 58 (after RIFF/WAVE + JUNK/ds64 + "fmt " + fmt_size).
+    f.seek(SeekFrom::Start(58))?;
+    let mut hdr = [0u8; 14];
+    f.read_exact(&mut hdr)?;
+    let channels = u16::from_le_bytes([hdr[0], hdr[1]]) as u64;
+    let sample_rate = u32::from_le_bytes([hdr[2], hdr[3], hdr[4], hdr[5]]);
+    let byte_rate = u32::from_le_bytes([hdr[6], hdr[7], hdr[8], hdr[9]]);
+    let block_align = u16::from_le_bytes([hdr[10], hdr[11]]);
+    let bit_depth = u16::from_le_bytes([hdr[12], hdr[13]]);
+    let bps = bytes_per_sample(bit_depth) as u64;
+
+    // Align to frame boundary.
+    let frame_size = channels * bps;
+    if frame_size == 0 {
+        return Ok(false);
+    }
+    let aligned_data = (actual_data / frame_size) * frame_size;
+    let sample_count = aligned_data / bps;
+
+    // Rewrite the full 80-byte header.
+    f.seek(SeekFrom::Start(0))?;
+    if aligned_data <= MAX_WAV_DATA {
+        let riff_size = (aligned_data + (HEADER_SIZE - 8)) as u32;
+        f.write_all(b"RIFF")?;
+        f.write_all(&riff_size.to_le_bytes())?;
+        f.write_all(b"WAVE")?;
+        f.write_all(b"JUNK")?;
+        f.write_all(&28u32.to_le_bytes())?;
+        f.write_all(&[0u8; 28])?;
+    } else {
+        f.write_all(b"RF64")?;
+        f.write_all(&0xFFFFFFFFu32.to_le_bytes())?;
+        f.write_all(b"WAVE")?;
+        f.write_all(b"ds64")?;
+        f.write_all(&28u32.to_le_bytes())?;
+        let rf64_riff_size = aligned_data + (HEADER_SIZE - 8);
+        f.write_all(&rf64_riff_size.to_le_bytes())?;
+        f.write_all(&aligned_data.to_le_bytes())?;
+        f.write_all(&sample_count.to_le_bytes())?;
+        f.write_all(&0u32.to_le_bytes())?;
+    }
+    f.write_all(b"fmt ")?;
+    f.write_all(&16u32.to_le_bytes())?;
+    f.write_all(&1u16.to_le_bytes())?;
+    f.write_all(&(channels as u16).to_le_bytes())?;
+    f.write_all(&sample_rate.to_le_bytes())?;
+    f.write_all(&byte_rate.to_le_bytes())?;
+    f.write_all(&block_align.to_le_bytes())?;
+    f.write_all(&bit_depth.to_le_bytes())?;
+    f.write_all(b"data")?;
+    if aligned_data <= MAX_WAV_DATA {
+        f.write_all(&(aligned_data as u32).to_le_bytes())?;
+    } else {
+        f.write_all(&0xFFFFFFFFu32.to_le_bytes())?;
+    }
+    f.flush()?;
+
+    log(&format!(
+        "repair_wav_header: {:?} repaired: claimed={} actual={}",
+        path, claimed_data, aligned_data
+    ));
+    Ok(true)
 }
 
 fn log_path() -> PathBuf {
@@ -268,6 +376,13 @@ impl AudioPlayer {
 
             audio_files.sort();
 
+            // Repair any WAV files with stale headers (e.g. from crash/power loss).
+            for f in &audio_files {
+                if f.extension().is_some_and(|e| e.eq_ignore_ascii_case("wav")) {
+                    let _ = repair_wav_header(f);
+                }
+            }
+
             if audio_files.is_empty() {
                 return Ok(());
             }
@@ -394,6 +509,14 @@ impl AudioPlayer {
         eq_enabled: bool,
         playback_device: &str,
     ) -> io::Result<()> {
+        // Repair WAV header if it was left stale by a crash/power loss.
+        if file_path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("wav"))
+        {
+            let _ = repair_wav_header(file_path);
+        }
+
         // Use mplayer's built-in volume control with slave mode for dynamic control
         let mut cmd = Command::new("mplayer");
         cmd.arg("-slave")
@@ -463,6 +586,13 @@ impl AudioPlayer {
             .collect();
 
         audio_files.sort();
+
+        // Repair any WAV files with stale headers (e.g. from crash/power loss).
+        for f in &audio_files {
+            if f.extension().is_some_and(|e| e.eq_ignore_ascii_case("wav")) {
+                let _ = repair_wav_header(f);
+            }
+        }
 
         if audio_files.is_empty() {
             return Err(io::Error::new(
@@ -1059,12 +1189,6 @@ fn capture_and_analyse<R: Read>(
     let byte_rate = sample_rate * channels as u32 * bps as u32;
     let block_align = channels as u16 * bps as u16;
 
-    // Header is always 80 bytes. For data < 4 GiB we write standard WAV + JUNK pad;
-    // for data >= 4 GiB we write RF64 with a ds64 chunk. Both are exactly 80 bytes
-    // so the PCM data always starts at offset 80.
-    const HEADER_SIZE: u64 = 80;
-    const MAX_WAV_DATA: u64 = u32::MAX as u64 - 36;
-
     let write_header = |f: &mut File, data_bytes: u64| -> io::Result<()> {
         f.seek(SeekFrom::Start(0))?;
         let sample_count = data_bytes / bps as u64;
@@ -1142,13 +1266,25 @@ fn capture_and_analyse<R: Read>(
     let window_frames: usize = (sample_rate / 10) as usize; // 100 ms
     let mut ch_bufs: Vec<Vec<f32>> = vec![vec![]; channels];
     let mut cur_levels = vec![-60.0f32; channels];
+    // Carry buffer for level analysis: holds bytes from the end of the last read that didn't
+    // form a complete frame.  A file-split causes extra I/O in this thread, delaying reads;
+    // when we resume the pipe may have a non-frame-aligned byte count queued up.  Without the
+    // carry buffer buf[0] would be treated as channel 0 even when it's mid-frame, making
+    // channels 1-4 appear to swap with channels 5-8 until the drift self-corrects.
+    let mut level_carry: Vec<u8> = Vec::with_capacity(frame_size);
     let buf_size = frame_size * 4096;
     let mut buf = vec![0u8; buf_size];
     let mut stopped_by_limit = false;
     let mut bytes_since_free_check: u64 = 0;
     const FREE_CHECK_INTERVAL: u64 = 4 * 1024 * 1024; // check every 4 MB written
-                                                      // total_bytes accumulates across all split files; used for the UI counter.
-                                                      // logical_bytes tracks only the current file (for header finalisation and drop-mode).
+
+    // Periodic header flush for crash safety (~10 seconds of audio between flushes).
+    // Disabled for circular drop mode (header can only be finalized after linearization).
+    let periodic_flush = !(drop_mode && split_size_bytes.is_none());
+    let flush_interval_bytes: u64 = byte_rate as u64 * 10;
+    let mut bytes_since_flush: u64 = 0;
+    // total_bytes accumulates across all split files; used for the UI counter.
+    // logical_bytes tracks only the current file (for header finalisation and drop-mode).
     let mut total_bytes: u64 = 0;
     let mut split_file_index: u32 = 1; // current split file number (1-based)
                                        // In drop+split mode: queue of completed file paths for oldest-first eviction.
@@ -1217,6 +1353,7 @@ fn capture_and_analyse<R: Read>(
                                     .map(|f| (f, 0u64));
                                 logical_bytes = 0;
                                 write_offset = HEADER_SIZE;
+                                bytes_since_flush = 0;
                                 if wav.is_none() {
                                     log(&format!(
                                         "capture_and_analyse: failed to open split file {:?}, stopping",
@@ -1308,6 +1445,25 @@ fn capture_and_analyse<R: Read>(
                         break;
                     }
 
+                    // Periodic header flush: rewrite header with current data size so
+                    // a crash/power loss leaves a valid (if slightly short) WAV file.
+                    if periodic_flush {
+                        bytes_since_flush += n as u64;
+                        if bytes_since_flush >= flush_interval_bytes {
+                            bytes_since_flush = 0;
+                            if let Some((ref mut f, _)) = wav {
+                                if write_header(f, logical_bytes).is_ok() {
+                                    let _ = f.seek(SeekFrom::Start(write_offset));
+                                    #[cfg(unix)]
+                                    {
+                                        use std::os::unix::io::AsRawFd;
+                                        unsafe { libc::fsync(f.as_raw_fd()) };
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // Disk space guard: check periodically.
                     // In circular-buffer drop mode, locks the current file size as the cap.
                     // In all other modes (stop, split, split+drop), stops the recording.
@@ -1354,40 +1510,45 @@ fn capture_and_analyse<R: Read>(
                     }
                 }
                 // Level analysis: decode samples.
-                let num_frames = n / frame_size;
+                // Prepend any carry bytes from the previous read so that we always start
+                // decoding at a frame boundary even when the OS delivers a non-frame-aligned
+                // byte count (e.g. after the I/O pause caused by a file split).
+                level_carry.extend_from_slice(&buf[..n]);
+                let num_frames = level_carry.len() / frame_size;
                 for i in 0..num_frames {
                     #[allow(clippy::needless_range_loop)]
                     for ch in 0..channels {
                         let off = i * frame_size + ch * bps;
-                        if off + bps <= n {
-                            let sample = match bit_depth {
-                                16 => {
-                                    let s = i16::from_le_bytes([buf[off], buf[off + 1]]);
-                                    s as f32 / i16::MAX as f32
-                                }
-                                24 => {
-                                    // S24_3LE: 3 bytes, sign-extend to i32
-                                    let s = ((buf[off] as i32)
-                                        | ((buf[off + 1] as i32) << 8)
-                                        | ((buf[off + 2] as i32) << 16))
-                                        << 8
-                                        >> 8; // sign-extend
-                                    s as f32 / 0x7FFFFF as f32
-                                }
-                                _ => {
-                                    let s = i32::from_le_bytes([
-                                        buf[off],
-                                        buf[off + 1],
-                                        buf[off + 2],
-                                        buf[off + 3],
-                                    ]);
-                                    s as f32 / i32::MAX as f32
-                                }
-                            };
-                            ch_bufs[ch].push(sample);
-                        }
+                        let sample = match bit_depth {
+                            16 => {
+                                let s =
+                                    i16::from_le_bytes([level_carry[off], level_carry[off + 1]]);
+                                s as f32 / i16::MAX as f32
+                            }
+                            24 => {
+                                // S24_3LE: 3 bytes, sign-extend to i32
+                                let s = ((level_carry[off] as i32)
+                                    | ((level_carry[off + 1] as i32) << 8)
+                                    | ((level_carry[off + 2] as i32) << 16))
+                                    << 8
+                                    >> 8; // sign-extend
+                                s as f32 / 0x7FFFFF as f32
+                            }
+                            _ => {
+                                let s = i32::from_le_bytes([
+                                    level_carry[off],
+                                    level_carry[off + 1],
+                                    level_carry[off + 2],
+                                    level_carry[off + 3],
+                                ]);
+                                s as f32 / i32::MAX as f32
+                            }
+                        };
+                        ch_bufs[ch].push(sample);
                     }
                 }
+                let consumed = num_frames * frame_size;
+                level_carry.drain(..consumed);
                 let mut updated = false;
                 #[allow(clippy::needless_range_loop)]
                 for ch in 0..channels {
@@ -1500,5 +1661,438 @@ impl Drop for AudioPlayer {
     fn drop(&mut self) {
         let _ = self.stop_capture();
         let _ = self.stop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: create a valid WAV file with octotrack's 80-byte header and fake PCM data.
+    fn create_test_wav(
+        path: &Path,
+        channels: usize,
+        sample_rate: u32,
+        bit_depth: u16,
+        data_bytes: usize,
+    ) {
+        let mut f = open_wav_file(path, channels, sample_rate, bit_depth).unwrap();
+        // Write fake PCM data (zeros are valid silent audio).
+        let data = vec![0u8; data_bytes];
+        f.write_all(&data).unwrap();
+        // Finalize header with correct data size.
+        f.seek(SeekFrom::Start(0)).unwrap();
+        let bps = bytes_per_sample(bit_depth);
+        let byte_rate = sample_rate * channels as u32 * bps as u32;
+        let block_align = channels as u16 * bps as u16;
+        let data_bytes = data_bytes as u64;
+        if data_bytes <= MAX_WAV_DATA {
+            let riff_size = (data_bytes + (HEADER_SIZE - 8)) as u32;
+            f.write_all(b"RIFF").unwrap();
+            f.write_all(&riff_size.to_le_bytes()).unwrap();
+            f.write_all(b"WAVE").unwrap();
+            f.write_all(b"JUNK").unwrap();
+            f.write_all(&28u32.to_le_bytes()).unwrap();
+            f.write_all(&[0u8; 28]).unwrap();
+        }
+        f.write_all(b"fmt ").unwrap();
+        f.write_all(&16u32.to_le_bytes()).unwrap();
+        f.write_all(&1u16.to_le_bytes()).unwrap();
+        f.write_all(&(channels as u16).to_le_bytes()).unwrap();
+        f.write_all(&sample_rate.to_le_bytes()).unwrap();
+        f.write_all(&byte_rate.to_le_bytes()).unwrap();
+        f.write_all(&block_align.to_le_bytes()).unwrap();
+        f.write_all(&bit_depth.to_le_bytes()).unwrap();
+        f.write_all(b"data").unwrap();
+        f.write_all(&(data_bytes as u32).to_le_bytes()).unwrap();
+        f.flush().unwrap();
+    }
+
+    /// Read the data chunk size from offset 76 of an 80-byte octotrack WAV header.
+    fn read_data_size(path: &Path) -> u32 {
+        let mut f = File::open(path).unwrap();
+        f.seek(SeekFrom::Start(76)).unwrap();
+        let mut buf = [0u8; 4];
+        f.read_exact(&mut buf).unwrap();
+        u32::from_le_bytes(buf)
+    }
+
+    /// Zero out the data chunk size at offset 76 (simulates a crash).
+    fn corrupt_data_size(path: &Path) {
+        let mut f = OpenOptions::new().write(true).open(path).unwrap();
+        f.seek(SeekFrom::Start(76)).unwrap();
+        f.write_all(&0u32.to_le_bytes()).unwrap();
+        f.flush().unwrap();
+    }
+
+    #[test]
+    fn repair_fixes_zeroed_data_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.wav");
+        let data_bytes = 48000 * 2 * 4 * 10; // 10s of stereo 32-bit 48kHz
+        create_test_wav(&path, 2, 48000, 32, data_bytes);
+
+        assert_eq!(read_data_size(&path), data_bytes as u32);
+        corrupt_data_size(&path);
+        assert_eq!(read_data_size(&path), 0);
+
+        let repaired = repair_wav_header(&path).unwrap();
+        assert!(repaired);
+        assert_eq!(read_data_size(&path), data_bytes as u32);
+    }
+
+    #[test]
+    fn repair_skips_correct_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("good.wav");
+        let data_bytes = 48000 * 2 * 4; // 1s
+        create_test_wav(&path, 2, 48000, 32, data_bytes);
+
+        let repaired = repair_wav_header(&path).unwrap();
+        assert!(!repaired);
+        assert_eq!(read_data_size(&path), data_bytes as u32);
+    }
+
+    #[test]
+    fn repair_handles_8_channel_32bit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("8ch.wav");
+        let data_bytes = 48000 * 8 * 4 * 5; // 5s of 8-channel 32-bit
+        create_test_wav(&path, 8, 48000, 32, data_bytes);
+
+        corrupt_data_size(&path);
+        let repaired = repair_wav_header(&path).unwrap();
+        assert!(repaired);
+        assert_eq!(read_data_size(&path), data_bytes as u32);
+    }
+
+    #[test]
+    fn repair_handles_16bit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("16bit.wav");
+        let data_bytes = 48000 * 2 * 2 * 3; // 3s of stereo 16-bit
+        create_test_wav(&path, 2, 48000, 16, data_bytes);
+
+        corrupt_data_size(&path);
+        let repaired = repair_wav_header(&path).unwrap();
+        assert!(repaired);
+        assert_eq!(read_data_size(&path), data_bytes as u32);
+    }
+
+    #[test]
+    fn repair_handles_24bit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("24bit.wav");
+        let data_bytes = 48000 * 2 * 3 * 3; // 3s of stereo 24-bit
+        create_test_wav(&path, 2, 48000, 24, data_bytes);
+
+        corrupt_data_size(&path);
+        let repaired = repair_wav_header(&path).unwrap();
+        assert!(repaired);
+        assert_eq!(read_data_size(&path), data_bytes as u32);
+    }
+
+    #[test]
+    fn repair_skips_non_wav() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("not_a_wav.wav");
+        std::fs::write(&path, b"this is not a wav file at all").unwrap();
+
+        let repaired = repair_wav_header(&path).unwrap();
+        assert!(!repaired);
+    }
+
+    #[test]
+    fn repair_skips_tiny_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tiny.wav");
+        std::fs::write(&path, &[0u8; 40]).unwrap();
+
+        let repaired = repair_wav_header(&path).unwrap();
+        assert!(!repaired);
+    }
+
+    // -----------------------------------------------------------------------
+    // bytes_per_sample
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn bytes_per_sample_values() {
+        assert_eq!(bytes_per_sample(16), 2);
+        assert_eq!(bytes_per_sample(24), 3);
+        assert_eq!(bytes_per_sample(32), 4);
+        assert_eq!(bytes_per_sample(0), 4); // default arm
+    }
+
+    // -----------------------------------------------------------------------
+    // split_file_path
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn split_file_path_format() {
+        let base = Path::new("/tmp/tracks/REC_123.wav");
+        assert_eq!(
+            split_file_path(base, 1),
+            PathBuf::from("/tmp/tracks/REC_123_001.wav")
+        );
+        assert_eq!(
+            split_file_path(base, 42),
+            PathBuf::from("/tmp/tracks/REC_123_042.wav")
+        );
+    }
+
+    #[test]
+    fn split_file_path_no_extension() {
+        let base = Path::new("/tmp/tracks/REC_123");
+        assert_eq!(
+            split_file_path(base, 1),
+            PathBuf::from("/tmp/tracks/REC_123_001.wav")
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // open_wav_file
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn open_wav_file_creates_80_byte_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.wav");
+        let f = open_wav_file(&path, 2, 48000, 32).unwrap();
+        drop(f);
+
+        let meta = std::fs::metadata(&path).unwrap();
+        assert_eq!(meta.len(), 80);
+    }
+
+    #[test]
+    fn open_wav_file_header_has_riff_magic() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.wav");
+        let f = open_wav_file(&path, 2, 48000, 32).unwrap();
+        drop(f);
+
+        let data = std::fs::read(&path).unwrap();
+        assert_eq!(&data[0..4], b"RIFF");
+        assert_eq!(&data[12..16], b"JUNK");
+        assert_eq!(&data[48..52], b"fmt ");
+        assert_eq!(&data[72..76], b"data");
+    }
+
+    #[test]
+    fn open_wav_file_data_size_is_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.wav");
+        let f = open_wav_file(&path, 8, 192000, 32).unwrap();
+        drop(f);
+
+        assert_eq!(read_data_size(&path), 0);
+    }
+
+    #[test]
+    fn open_wav_file_stores_correct_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.wav");
+        let f = open_wav_file(&path, 8, 96000, 24).unwrap();
+        drop(f);
+
+        let data = std::fs::read(&path).unwrap();
+        // channels at offset 58
+        let channels = u16::from_le_bytes([data[58], data[59]]);
+        assert_eq!(channels, 8);
+        // sample rate at offset 60
+        let sr = u32::from_le_bytes([data[60], data[61], data[62], data[63]]);
+        assert_eq!(sr, 96000);
+        // bit depth at offset 70
+        let bd = u16::from_le_bytes([data[70], data[71]]);
+        assert_eq!(bd, 24);
+    }
+
+    // -----------------------------------------------------------------------
+    // capture_and_analyse — recording engine tests
+    // -----------------------------------------------------------------------
+
+    /// Helper to run capture_and_analyse with synthetic PCM data.
+    /// Returns the recording_bytes counter value after capture completes.
+    fn run_capture(
+        pcm_data: &[u8],
+        wav_path: &Path,
+        channels: usize,
+        sample_rate: u32,
+        bit_depth: u16,
+        max_data_bytes: Option<u64>,
+        drop_mode: bool,
+        split_size_bytes: Option<u64>,
+    ) -> u64 {
+        let first_path = if split_size_bytes.is_some() {
+            split_file_path(wav_path, 1)
+        } else {
+            wav_path.to_path_buf()
+        };
+        let wav_file = open_wav_file(&first_path, channels, sample_rate, bit_depth).unwrap();
+        let monitor_sink: Arc<Mutex<Option<ChildStdin>>> = Arc::new(Mutex::new(None));
+        let levels = Arc::new(Mutex::new(vec![-60.0f32; channels]));
+        let recording_bytes = Arc::new(Mutex::new(0u64));
+        let reader = std::io::Cursor::new(pcm_data.to_vec());
+
+        capture_and_analyse(
+            reader,
+            Some(wav_file),
+            Some(wav_path.to_path_buf()),
+            monitor_sink,
+            channels,
+            sample_rate,
+            bit_depth,
+            levels,
+            max_data_bytes,
+            drop_mode,
+            recording_bytes.clone(),
+            0, // min_free_bytes — skip disk check in tests
+            split_size_bytes,
+        );
+
+        let result = *recording_bytes.lock().unwrap();
+        result
+    }
+
+    /// Generate fake PCM data (silence) of the given duration.
+    fn silence(channels: usize, sample_rate: u32, bit_depth: u16, seconds: f64) -> Vec<u8> {
+        let bps = bytes_per_sample(bit_depth);
+        let frame_size = channels * bps;
+        let num_frames = (sample_rate as f64 * seconds) as usize;
+        vec![0u8; num_frames * frame_size]
+    }
+
+    #[test]
+    fn capture_normal_recording() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav_path = dir.path().join("rec.wav");
+        let pcm = silence(2, 48000, 32, 1.0); // 1 second stereo 32-bit
+
+        let bytes = run_capture(&pcm, &wav_path, 2, 48000, 32, None, false, None);
+
+        assert_eq!(bytes, pcm.len() as u64);
+        // File should be header + data
+        let meta = std::fs::metadata(&wav_path).unwrap();
+        assert_eq!(meta.len(), HEADER_SIZE + pcm.len() as u64);
+        // Header data size should match
+        assert_eq!(read_data_size(&wav_path), pcm.len() as u32);
+    }
+
+    #[test]
+    fn capture_stop_at_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav_path = dir.path().join("rec.wav");
+        let pcm = silence(2, 48000, 32, 2.0); // 2 seconds
+        let frame_size = 2 * 4; // stereo 32-bit
+                                // Limit to 1 second worth of data
+        let one_sec_bytes = 48000 * frame_size;
+        let max_data = HEADER_SIZE + one_sec_bytes as u64;
+
+        let bytes = run_capture(&pcm, &wav_path, 2, 48000, 32, Some(max_data), false, None);
+
+        // Should have stopped at the limit (aligned to frame)
+        assert_eq!(bytes, one_sec_bytes as u64);
+        let meta = std::fs::metadata(&wav_path).unwrap();
+        assert_eq!(meta.len(), HEADER_SIZE + one_sec_bytes as u64);
+    }
+
+    #[test]
+    fn capture_circular_drop_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav_path = dir.path().join("rec.wav");
+        // 3 seconds of data into a 1-second buffer
+        let pcm = silence(2, 48000, 32, 3.0);
+        let frame_size = 2 * 4;
+        let one_sec_bytes = 48000 * frame_size;
+        let max_data = HEADER_SIZE + one_sec_bytes as u64;
+
+        run_capture(&pcm, &wav_path, 2, 48000, 32, Some(max_data), true, None);
+
+        // After linearization, file should be header + 1 second of data
+        let meta = std::fs::metadata(&wav_path).unwrap();
+        assert_eq!(meta.len(), HEADER_SIZE + one_sec_bytes as u64);
+        assert_eq!(read_data_size(&wav_path), one_sec_bytes as u32);
+    }
+
+    #[test]
+    fn capture_split_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav_path = dir.path().join("rec.wav");
+        let pcm = silence(2, 48000, 32, 2.0);
+        let frame_size = 2 * 4;
+        let one_sec_bytes = (48000 * frame_size) as u64;
+        // Split every 1 second
+        let split_size = one_sec_bytes;
+
+        run_capture(&pcm, &wav_path, 2, 48000, 32, None, false, Some(split_size));
+
+        // Should have created _001 and _002 files
+        let f1 = split_file_path(&wav_path, 1);
+        let f2 = split_file_path(&wav_path, 2);
+        assert!(f1.exists(), "split file _001 should exist");
+        assert!(f2.exists(), "split file _002 should exist");
+
+        // Each file should have header + ~1 second of data
+        let size1 = std::fs::metadata(&f1).unwrap().len();
+        let size2 = std::fs::metadata(&f2).unwrap().len();
+        assert_eq!(size1, HEADER_SIZE + one_sec_bytes);
+        // Second file gets remaining data
+        assert!(size2 > HEADER_SIZE);
+    }
+
+    #[test]
+    fn capture_split_drop_mode_evicts_oldest() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav_path = dir.path().join("rec.wav");
+        // 4 seconds of data, split at 1 second, max 2 seconds total
+        // Should keep at most 2 files and delete older ones
+        let pcm = silence(2, 48000, 32, 4.0);
+        let frame_size = 2 * 4;
+        let one_sec_bytes = (48000 * frame_size) as u64;
+        let split_size = one_sec_bytes;
+        let max_data = HEADER_SIZE + 2 * one_sec_bytes; // room for 2 files
+
+        run_capture(
+            &pcm,
+            &wav_path,
+            2,
+            48000,
+            32,
+            Some(max_data),
+            true,
+            Some(split_size),
+        );
+
+        // Oldest files should have been deleted
+        let f1 = split_file_path(&wav_path, 1);
+        let f2 = split_file_path(&wav_path, 2);
+        let f3 = split_file_path(&wav_path, 3);
+        let f4 = split_file_path(&wav_path, 4);
+
+        // With max_data = 2 * split, max_split_files = 2.
+        // Files 1 and 2 should be evicted, 3 and 4 (or just 4) should remain.
+        assert!(!f1.exists(), "oldest file should be deleted");
+        assert!(!f2.exists(), "second oldest should be deleted");
+        // At least the last file should exist
+        assert!(
+            f3.exists() || f4.exists(),
+            "most recent file(s) should still exist"
+        );
+    }
+
+    #[test]
+    fn capture_empty_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav_path = dir.path().join("rec.wav");
+        let pcm: Vec<u8> = vec![];
+
+        let bytes = run_capture(&pcm, &wav_path, 2, 48000, 32, None, false, None);
+
+        assert_eq!(bytes, 0);
+        // File should just be the header
+        let meta = std::fs::metadata(&wav_path).unwrap();
+        assert_eq!(meta.len(), HEADER_SIZE);
+        assert_eq!(read_data_size(&wav_path), 0);
     }
 }

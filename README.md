@@ -130,6 +130,8 @@ Press `R` again to stop. The new recording appears in your track list automatica
 
 Press `M` to toggle input monitoring — this routes audio from the input device to the monitoring output in real-time with level metering, so you can hear what's coming in. Monitoring can be active independently or while recording.
 
+**Crash protection:** Recordings are protected against crashes and power loss. The WAV header is flushed to disk every ~10 seconds during recording, so at most a few seconds of metadata is lost on an unexpected shutdown. Additionally, when you play a recording, the header is automatically checked and repaired if the file is larger than what the header claims — so a file left mid-recording will play back correctly with no manual intervention.
+
 **Note:** Playback is automatically stopped when monitoring or recording starts, as the audio device may not support simultaneous playback and capture.
 
 ### Recording modes
@@ -541,6 +543,19 @@ Run in debug mode for faster compilation during development:
 
 ```bash
 cargo run
+```
+
+### Running Tests
+
+```bash
+cargo test
+```
+
+For test coverage reports (requires [cargo-tarpaulin](https://github.com/xd009642/tarpaulin)):
+
+```bash
+cargo install cargo-tarpaulin
+cargo tarpaulin
 ```
 
 ### Adding New Features

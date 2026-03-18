@@ -257,3 +257,187 @@ fn parse_range(s: &str) -> Option<(u32, u32)> {
     let b: u32 = b_s.trim().parse().ok()?;
     Some((a, b))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // CronExpr::parse
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_every_minute() {
+        let c = CronExpr::parse("* * * * *").unwrap();
+        assert_eq!(c.minutes.len(), 60);
+        assert_eq!(c.hours.len(), 24);
+        assert_eq!(c.days.len(), 31);
+        assert_eq!(c.months.len(), 12);
+        assert_eq!(c.weekdays.len(), 7);
+    }
+
+    #[test]
+    fn parse_specific_values() {
+        let c = CronExpr::parse("30 14 25 12 5").unwrap();
+        assert_eq!(c.minutes, vec![30]);
+        assert_eq!(c.hours, vec![14]);
+        assert_eq!(c.days, vec![25]);
+        assert_eq!(c.months, vec![12]);
+        assert_eq!(c.weekdays, vec![5]);
+    }
+
+    #[test]
+    fn parse_ranges() {
+        let c = CronExpr::parse("0-5 9-17 1-15 1-6 1-5").unwrap();
+        assert_eq!(c.minutes, vec![0, 1, 2, 3, 4, 5]);
+        assert_eq!(c.hours, vec![9, 10, 11, 12, 13, 14, 15, 16, 17]);
+        assert_eq!(c.weekdays, vec![1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn parse_step() {
+        let c = CronExpr::parse("*/15 */2 * * *").unwrap();
+        assert_eq!(c.minutes, vec![0, 15, 30, 45]);
+        assert_eq!(c.hours, vec![0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22]);
+    }
+
+    #[test]
+    fn parse_range_with_step() {
+        let c = CronExpr::parse("0-30/10 * * * *").unwrap();
+        assert_eq!(c.minutes, vec![0, 10, 20, 30]);
+    }
+
+    #[test]
+    fn parse_comma_list() {
+        let c = CronExpr::parse("0,15,30,45 * * * *").unwrap();
+        assert_eq!(c.minutes, vec![0, 15, 30, 45]);
+    }
+
+    #[test]
+    fn parse_wrong_field_count() {
+        assert!(CronExpr::parse("* * *").is_none());
+        assert!(CronExpr::parse("* * * * * *").is_none());
+        assert!(CronExpr::parse("").is_none());
+    }
+
+    #[test]
+    fn parse_invalid_values() {
+        assert!(CronExpr::parse("abc * * * *").is_none());
+        assert!(CronExpr::parse("*/0 * * * *").is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // CronExpr::matches
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn matches_exact() {
+        let c = CronExpr::parse("0 1 * * *").unwrap();
+        assert!(c.matches(0, 1, 15, 6, 3));
+        assert!(!c.matches(1, 1, 15, 6, 3));
+        assert!(!c.matches(0, 2, 15, 6, 3));
+    }
+
+    #[test]
+    fn matches_weekday_range() {
+        let c = CronExpr::parse("0 22 * * 1-5").unwrap();
+        // Monday=1 through Friday=5
+        assert!(c.matches(0, 22, 1, 1, 1));
+        assert!(c.matches(0, 22, 1, 1, 5));
+        // Sunday=0, Saturday=6
+        assert!(!c.matches(0, 22, 1, 1, 0));
+        assert!(!c.matches(0, 22, 1, 1, 6));
+    }
+
+    #[test]
+    fn matches_every_15_min() {
+        let c = CronExpr::parse("*/15 * * * *").unwrap();
+        assert!(c.matches(0, 0, 1, 1, 0));
+        assert!(c.matches(15, 12, 1, 1, 0));
+        assert!(c.matches(30, 12, 1, 1, 0));
+        assert!(c.matches(45, 12, 1, 1, 0));
+        assert!(!c.matches(10, 12, 1, 1, 0));
+    }
+
+    // -----------------------------------------------------------------------
+    // ScheduleEntry::from_json
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn entry_from_json_rec() {
+        let v: serde_json::Value = serde_json::json!({
+            "cron": "0 1 * * *",
+            "action": "rec",
+            "duration_minutes": 60
+        });
+        let e = ScheduleEntry::from_json(&v).unwrap();
+        assert_eq!(e.action, ScheduleAction::Rec);
+        assert_eq!(e.duration_secs, 3600);
+        assert!(e.start_track.is_none());
+    }
+
+    #[test]
+    fn entry_from_json_play_with_track() {
+        let v: serde_json::Value = serde_json::json!({
+            "cron": "0 22 * * 1-5",
+            "action": "play",
+            "duration_seconds": 300,
+            "start_track": "evening_set"
+        });
+        let e = ScheduleEntry::from_json(&v).unwrap();
+        assert_eq!(e.action, ScheduleAction::Play);
+        assert_eq!(e.duration_secs, 300);
+        assert_eq!(e.start_track.as_deref(), Some("evening_set"));
+    }
+
+    #[test]
+    fn entry_from_json_missing_duration() {
+        let v: serde_json::Value = serde_json::json!({
+            "cron": "0 1 * * *",
+            "action": "rec"
+        });
+        assert!(ScheduleEntry::from_json(&v).is_none());
+    }
+
+    #[test]
+    fn entry_from_json_invalid_action() {
+        let v: serde_json::Value = serde_json::json!({
+            "cron": "0 1 * * *",
+            "action": "nope",
+            "duration_minutes": 60
+        });
+        assert!(ScheduleEntry::from_json(&v).is_none());
+    }
+
+    #[test]
+    fn entry_from_json_invalid_cron() {
+        let v: serde_json::Value = serde_json::json!({
+            "cron": "not a cron",
+            "action": "rec",
+            "duration_minutes": 60
+        });
+        assert!(ScheduleEntry::from_json(&v).is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // expand_field / expand_part edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn expand_field_deduplicates() {
+        // "0,0,0" should produce just [0]
+        let result = expand_field("0,0,0", 0, 59).unwrap();
+        assert_eq!(result, vec![0]);
+    }
+
+    #[test]
+    fn expand_field_sorts() {
+        let result = expand_field("30,10,20", 0, 59).unwrap();
+        assert_eq!(result, vec![10, 20, 30]);
+    }
+
+    #[test]
+    fn range_step_zero_returns_none() {
+        assert!(expand_field("1-10/0", 0, 59).is_none());
+    }
+}
