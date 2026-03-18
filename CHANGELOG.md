@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.2] - 2026-03-18
+
+### Added
+- Test coverage for core audio and config logic
+- 32-bit ARM (`armv6`) build target in CI
+- ARCHITECTURE.md documenting system design
+
+### Changed
+- Config refactored into dedicated `src/config.rs` module with strongly-typed structs and TOML round-trip support
+
+### Fixed
+- Cross-platform `statvfs` type mismatch causing build failure on 32-bit ARM
+- Clippy and formatting issues across `audio.rs`, `config.rs`, and `main.rs`
+
 ## [0.2.0] - 2026-03-17
 
 ### Added
