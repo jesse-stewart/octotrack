@@ -12,6 +12,8 @@ jobs:
         include:
           - target: aarch64-unknown-linux-gnu
             name: octotrack-linux-arm64
+          - target: arm-unknown-linux-gnueabihf
+            name: octotrack-linux-armv6
           - target: x86_64-unknown-linux-gnu
             name: octotrack-linux-x86_64
 
@@ -33,6 +35,17 @@ jobs:
             printf 'deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble main restricted universe multiverse\ndeb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble-updates main restricted universe multiverse\ndeb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble-security main restricted universe multiverse\n' | sudo tee /etc/apt/sources.list.d/arm64-ports.list
             sudo apt-get update
             sudo apt-get install -y gcc-aarch64-linux-gnu libasound2-dev:arm64
+          elif [ "${{ matrix.target }}" = "arm-unknown-linux-gnueabihf" ]; then
+            sudo dpkg --add-architecture armhf
+            # Restrict .list sources to amd64 (only lines without existing arch specifier)
+            sudo sed -i 's|^deb \([^[]\)|deb [arch=amd64] \1|g' /etc/apt/sources.list 2>/dev/null || true
+            sudo find /etc/apt/sources.list.d/ -name "*.list" -exec sudo sed -i 's|^deb \([^[]\)|deb [arch=amd64] \1|g' {} \; 2>/dev/null || true
+            # Restrict DEB822 .sources files to amd64
+            sudo python3 .github/scripts/fix_apt_sources.py
+            # Add armhf sources from Ubuntu ports
+            printf 'deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports noble main restricted universe multiverse\ndeb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports noble-updates main restricted universe multiverse\ndeb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports noble-security main restricted universe multiverse\n' | sudo tee /etc/apt/sources.list.d/armhf-ports.list
+            sudo apt-get update
+            sudo apt-get install -y gcc-arm-linux-gnueabihf libasound2-dev:armhf
           else
             sudo apt-get update
             sudo apt-get install -y libasound2-dev
@@ -46,6 +59,7 @@ jobs:
       - name: Build
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          CARGO_TARGET_ARM_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Package binary
@@ -78,4 +92,5 @@ jobs:
           body_path: CHANGELOG.md
           files: |
             octotrack-linux-arm64/octotrack-linux-arm64
+            octotrack-linux-armv6/octotrack-linux-armv6
             octotrack-linux-x86_64/octotrack-linux-x86_64

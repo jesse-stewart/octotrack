@@ -1266,6 +1266,12 @@ fn capture_and_analyse<R: Read>(
     let window_frames: usize = (sample_rate / 10) as usize; // 100 ms
     let mut ch_bufs: Vec<Vec<f32>> = vec![vec![]; channels];
     let mut cur_levels = vec![-60.0f32; channels];
+    // Carry buffer for level analysis: holds bytes from the end of the last read that didn't
+    // form a complete frame.  A file-split causes extra I/O in this thread, delaying reads;
+    // when we resume the pipe may have a non-frame-aligned byte count queued up.  Without the
+    // carry buffer buf[0] would be treated as channel 0 even when it's mid-frame, making
+    // channels 1-4 appear to swap with channels 5-8 until the drift self-corrects.
+    let mut level_carry: Vec<u8> = Vec::with_capacity(frame_size);
     let buf_size = frame_size * 4096;
     let mut buf = vec![0u8; buf_size];
     let mut stopped_by_limit = false;
@@ -1504,40 +1510,45 @@ fn capture_and_analyse<R: Read>(
                     }
                 }
                 // Level analysis: decode samples.
-                let num_frames = n / frame_size;
+                // Prepend any carry bytes from the previous read so that we always start
+                // decoding at a frame boundary even when the OS delivers a non-frame-aligned
+                // byte count (e.g. after the I/O pause caused by a file split).
+                level_carry.extend_from_slice(&buf[..n]);
+                let num_frames = level_carry.len() / frame_size;
                 for i in 0..num_frames {
                     #[allow(clippy::needless_range_loop)]
                     for ch in 0..channels {
                         let off = i * frame_size + ch * bps;
-                        if off + bps <= n {
-                            let sample = match bit_depth {
-                                16 => {
-                                    let s = i16::from_le_bytes([buf[off], buf[off + 1]]);
-                                    s as f32 / i16::MAX as f32
-                                }
-                                24 => {
-                                    // S24_3LE: 3 bytes, sign-extend to i32
-                                    let s = ((buf[off] as i32)
-                                        | ((buf[off + 1] as i32) << 8)
-                                        | ((buf[off + 2] as i32) << 16))
-                                        << 8
-                                        >> 8; // sign-extend
-                                    s as f32 / 0x7FFFFF as f32
-                                }
-                                _ => {
-                                    let s = i32::from_le_bytes([
-                                        buf[off],
-                                        buf[off + 1],
-                                        buf[off + 2],
-                                        buf[off + 3],
-                                    ]);
-                                    s as f32 / i32::MAX as f32
-                                }
-                            };
-                            ch_bufs[ch].push(sample);
-                        }
+                        let sample = match bit_depth {
+                            16 => {
+                                let s =
+                                    i16::from_le_bytes([level_carry[off], level_carry[off + 1]]);
+                                s as f32 / i16::MAX as f32
+                            }
+                            24 => {
+                                // S24_3LE: 3 bytes, sign-extend to i32
+                                let s = ((level_carry[off] as i32)
+                                    | ((level_carry[off + 1] as i32) << 8)
+                                    | ((level_carry[off + 2] as i32) << 16))
+                                    << 8
+                                    >> 8; // sign-extend
+                                s as f32 / 0x7FFFFF as f32
+                            }
+                            _ => {
+                                let s = i32::from_le_bytes([
+                                    level_carry[off],
+                                    level_carry[off + 1],
+                                    level_carry[off + 2],
+                                    level_carry[off + 3],
+                                ]);
+                                s as f32 / i32::MAX as f32
+                            }
+                        };
+                        ch_bufs[ch].push(sample);
                     }
                 }
+                let consumed = num_frames * frame_size;
+                level_carry.drain(..consumed);
                 let mut updated = false;
                 #[allow(clippy::needless_range_loop)]
                 for ch in 0..channels {
