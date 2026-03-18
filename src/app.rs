@@ -417,10 +417,11 @@ impl App {
                 .arg("json")
                 .arg(&first_file)
                 .output()
-                .unwrap()
+                .unwrap_or_default()
                 .stdout;
             let meta_info: std::borrow::Cow<str> = String::from_utf8_lossy(&meta_info);
-            let meta_info: serde_json::Value = serde_json::from_str(&meta_info).unwrap();
+            let meta_info: serde_json::Value =
+                serde_json::from_str(&meta_info).unwrap_or(serde_json::Value::Null);
 
             let channels_per_file =
                 meta_info["streams"][0]["channels"].as_u64().unwrap_or(1) as u32;
@@ -463,10 +464,11 @@ impl App {
                 .arg("json")
                 .arg(track_path)
                 .output()
-                .unwrap()
+                .unwrap_or_default()
                 .stdout;
             let meta_info: std::borrow::Cow<str> = String::from_utf8_lossy(&meta_info);
-            let meta_info: serde_json::Value = serde_json::from_str(&meta_info).unwrap();
+            let meta_info: serde_json::Value =
+                serde_json::from_str(&meta_info).unwrap_or(serde_json::Value::Null);
 
             // Use filename without extension as fallback
             let fallback_title = track_path
