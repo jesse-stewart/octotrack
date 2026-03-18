@@ -35,7 +35,7 @@ pub fn json_path() -> PathBuf {
 // ---------------------------------------------------------------------------
 
 /// Top-level application configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub playback: PlaybackConfig,
@@ -49,23 +49,6 @@ pub struct Config {
     pub web: WebConfig,
     pub tools: ToolsConfig,
     pub logging: LoggingConfig,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            playback: PlaybackConfig::default(),
-            recording: RecordingSettings::default(),
-            monitoring: MonitoringConfig::default(),
-            channels: vec![],
-            storage: StorageConfig::default(),
-            display: DisplayConfig::default(),
-            network: NetworkConfig::default(),
-            web: WebConfig::default(),
-            tools: ToolsConfig::default(),
-            logging: LoggingConfig::default(),
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -263,20 +246,11 @@ impl Default for DisplayConfig {
 // [network]
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NetworkConfig {
     pub ap: AccessPointConfig,
     pub known_networks: Vec<KnownNetworkConfig>,
-}
-
-impl Default for NetworkConfig {
-    fn default() -> Self {
-        Self {
-            ap: AccessPointConfig::default(),
-            known_networks: vec![],
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
