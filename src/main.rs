@@ -20,7 +20,10 @@ enum RunMode {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "octotrack", about = "Multi-channel audio playback and recording")]
+#[command(
+    name = "octotrack",
+    about = "Multi-channel audio playback and recording"
+)]
 struct Cli {
     /// Run as a headless background daemon
     #[arg(long)]

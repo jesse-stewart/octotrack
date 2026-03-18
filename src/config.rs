@@ -721,7 +721,10 @@ mod tests {
         assert_eq!(cfg.playback.start_track, "my_song");
         assert_eq!(cfg.playback.device, "hw:1,0");
         assert_eq!(cfg.playback.channel_count, 2);
-        assert_eq!(cfg.playback.eq.bands, vec![1, 2, 3, 4, 5, -1, -2, -3, -4, -5]);
+        assert_eq!(
+            cfg.playback.eq.bands,
+            vec![1, 2, 3, 4, 5, -1, -2, -3, -4, -5]
+        );
         assert!(!cfg.playback.eq.enabled);
         assert_eq!(cfg.recording.input_device, "hw:2,0");
         assert_eq!(cfg.recording.channel_count, 4);
@@ -802,7 +805,10 @@ device = "hw:0,0"
         update_doc(&mut doc, &cfg);
 
         let result = doc.to_string();
-        assert!(result.contains("My custom comment"), "block comment preserved");
+        assert!(
+            result.contains("My custom comment"),
+            "block comment preserved"
+        );
         assert!(result.contains("volume = 99"), "value updated");
         // Verify unmanaged keys in the file are not clobbered
         assert!(result.contains("device"), "other keys still present");
