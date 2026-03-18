@@ -1800,4 +1800,288 @@ mod tests {
         let repaired = repair_wav_header(&path).unwrap();
         assert!(!repaired);
     }
+
+    // -----------------------------------------------------------------------
+    // bytes_per_sample
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn bytes_per_sample_values() {
+        assert_eq!(bytes_per_sample(16), 2);
+        assert_eq!(bytes_per_sample(24), 3);
+        assert_eq!(bytes_per_sample(32), 4);
+        assert_eq!(bytes_per_sample(0), 4); // default arm
+    }
+
+    // -----------------------------------------------------------------------
+    // split_file_path
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn split_file_path_format() {
+        let base = Path::new("/tmp/tracks/REC_123.wav");
+        assert_eq!(
+            split_file_path(base, 1),
+            PathBuf::from("/tmp/tracks/REC_123_001.wav")
+        );
+        assert_eq!(
+            split_file_path(base, 42),
+            PathBuf::from("/tmp/tracks/REC_123_042.wav")
+        );
+    }
+
+    #[test]
+    fn split_file_path_no_extension() {
+        let base = Path::new("/tmp/tracks/REC_123");
+        assert_eq!(
+            split_file_path(base, 1),
+            PathBuf::from("/tmp/tracks/REC_123_001.wav")
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // open_wav_file
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn open_wav_file_creates_80_byte_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.wav");
+        let f = open_wav_file(&path, 2, 48000, 32).unwrap();
+        drop(f);
+
+        let meta = std::fs::metadata(&path).unwrap();
+        assert_eq!(meta.len(), 80);
+    }
+
+    #[test]
+    fn open_wav_file_header_has_riff_magic() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.wav");
+        let f = open_wav_file(&path, 2, 48000, 32).unwrap();
+        drop(f);
+
+        let data = std::fs::read(&path).unwrap();
+        assert_eq!(&data[0..4], b"RIFF");
+        assert_eq!(&data[12..16], b"JUNK");
+        assert_eq!(&data[48..52], b"fmt ");
+        assert_eq!(&data[72..76], b"data");
+    }
+
+    #[test]
+    fn open_wav_file_data_size_is_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.wav");
+        let f = open_wav_file(&path, 8, 192000, 32).unwrap();
+        drop(f);
+
+        assert_eq!(read_data_size(&path), 0);
+    }
+
+    #[test]
+    fn open_wav_file_stores_correct_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.wav");
+        let f = open_wav_file(&path, 8, 96000, 24).unwrap();
+        drop(f);
+
+        let data = std::fs::read(&path).unwrap();
+        // channels at offset 58
+        let channels = u16::from_le_bytes([data[58], data[59]]);
+        assert_eq!(channels, 8);
+        // sample rate at offset 60
+        let sr = u32::from_le_bytes([data[60], data[61], data[62], data[63]]);
+        assert_eq!(sr, 96000);
+        // bit depth at offset 70
+        let bd = u16::from_le_bytes([data[70], data[71]]);
+        assert_eq!(bd, 24);
+    }
+
+    // -----------------------------------------------------------------------
+    // capture_and_analyse — recording engine tests
+    // -----------------------------------------------------------------------
+
+    /// Helper to run capture_and_analyse with synthetic PCM data.
+    /// Returns the recording_bytes counter value after capture completes.
+    fn run_capture(
+        pcm_data: &[u8],
+        wav_path: &Path,
+        channels: usize,
+        sample_rate: u32,
+        bit_depth: u16,
+        max_data_bytes: Option<u64>,
+        drop_mode: bool,
+        split_size_bytes: Option<u64>,
+    ) -> u64 {
+        let first_path = if split_size_bytes.is_some() {
+            split_file_path(wav_path, 1)
+        } else {
+            wav_path.to_path_buf()
+        };
+        let wav_file = open_wav_file(&first_path, channels, sample_rate, bit_depth).unwrap();
+        let monitor_sink: Arc<Mutex<Option<ChildStdin>>> = Arc::new(Mutex::new(None));
+        let levels = Arc::new(Mutex::new(vec![-60.0f32; channels]));
+        let recording_bytes = Arc::new(Mutex::new(0u64));
+        let reader = std::io::Cursor::new(pcm_data.to_vec());
+
+        capture_and_analyse(
+            reader,
+            Some(wav_file),
+            Some(wav_path.to_path_buf()),
+            monitor_sink,
+            channels,
+            sample_rate,
+            bit_depth,
+            levels,
+            max_data_bytes,
+            drop_mode,
+            recording_bytes.clone(),
+            0, // min_free_bytes — skip disk check in tests
+            split_size_bytes,
+        );
+
+        let result = *recording_bytes.lock().unwrap();
+        result
+    }
+
+    /// Generate fake PCM data (silence) of the given duration.
+    fn silence(channels: usize, sample_rate: u32, bit_depth: u16, seconds: f64) -> Vec<u8> {
+        let bps = bytes_per_sample(bit_depth);
+        let frame_size = channels * bps;
+        let num_frames = (sample_rate as f64 * seconds) as usize;
+        vec![0u8; num_frames * frame_size]
+    }
+
+    #[test]
+    fn capture_normal_recording() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav_path = dir.path().join("rec.wav");
+        let pcm = silence(2, 48000, 32, 1.0); // 1 second stereo 32-bit
+
+        let bytes = run_capture(&pcm, &wav_path, 2, 48000, 32, None, false, None);
+
+        assert_eq!(bytes, pcm.len() as u64);
+        // File should be header + data
+        let meta = std::fs::metadata(&wav_path).unwrap();
+        assert_eq!(meta.len(), HEADER_SIZE + pcm.len() as u64);
+        // Header data size should match
+        assert_eq!(read_data_size(&wav_path), pcm.len() as u32);
+    }
+
+    #[test]
+    fn capture_stop_at_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav_path = dir.path().join("rec.wav");
+        let pcm = silence(2, 48000, 32, 2.0); // 2 seconds
+        let frame_size = 2 * 4; // stereo 32-bit
+                                // Limit to 1 second worth of data
+        let one_sec_bytes = 48000 * frame_size;
+        let max_data = HEADER_SIZE + one_sec_bytes as u64;
+
+        let bytes = run_capture(&pcm, &wav_path, 2, 48000, 32, Some(max_data), false, None);
+
+        // Should have stopped at the limit (aligned to frame)
+        assert_eq!(bytes, one_sec_bytes as u64);
+        let meta = std::fs::metadata(&wav_path).unwrap();
+        assert_eq!(meta.len(), HEADER_SIZE + one_sec_bytes as u64);
+    }
+
+    #[test]
+    fn capture_circular_drop_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav_path = dir.path().join("rec.wav");
+        // 3 seconds of data into a 1-second buffer
+        let pcm = silence(2, 48000, 32, 3.0);
+        let frame_size = 2 * 4;
+        let one_sec_bytes = 48000 * frame_size;
+        let max_data = HEADER_SIZE + one_sec_bytes as u64;
+
+        run_capture(&pcm, &wav_path, 2, 48000, 32, Some(max_data), true, None);
+
+        // After linearization, file should be header + 1 second of data
+        let meta = std::fs::metadata(&wav_path).unwrap();
+        assert_eq!(meta.len(), HEADER_SIZE + one_sec_bytes as u64);
+        assert_eq!(read_data_size(&wav_path), one_sec_bytes as u32);
+    }
+
+    #[test]
+    fn capture_split_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav_path = dir.path().join("rec.wav");
+        let pcm = silence(2, 48000, 32, 2.0);
+        let frame_size = 2 * 4;
+        let one_sec_bytes = (48000 * frame_size) as u64;
+        // Split every 1 second
+        let split_size = one_sec_bytes;
+
+        run_capture(&pcm, &wav_path, 2, 48000, 32, None, false, Some(split_size));
+
+        // Should have created _001 and _002 files
+        let f1 = split_file_path(&wav_path, 1);
+        let f2 = split_file_path(&wav_path, 2);
+        assert!(f1.exists(), "split file _001 should exist");
+        assert!(f2.exists(), "split file _002 should exist");
+
+        // Each file should have header + ~1 second of data
+        let size1 = std::fs::metadata(&f1).unwrap().len();
+        let size2 = std::fs::metadata(&f2).unwrap().len();
+        assert_eq!(size1, HEADER_SIZE + one_sec_bytes);
+        // Second file gets remaining data
+        assert!(size2 > HEADER_SIZE);
+    }
+
+    #[test]
+    fn capture_split_drop_mode_evicts_oldest() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav_path = dir.path().join("rec.wav");
+        // 4 seconds of data, split at 1 second, max 2 seconds total
+        // Should keep at most 2 files and delete older ones
+        let pcm = silence(2, 48000, 32, 4.0);
+        let frame_size = 2 * 4;
+        let one_sec_bytes = (48000 * frame_size) as u64;
+        let split_size = one_sec_bytes;
+        let max_data = HEADER_SIZE + 2 * one_sec_bytes; // room for 2 files
+
+        run_capture(
+            &pcm,
+            &wav_path,
+            2,
+            48000,
+            32,
+            Some(max_data),
+            true,
+            Some(split_size),
+        );
+
+        // Oldest files should have been deleted
+        let f1 = split_file_path(&wav_path, 1);
+        let f2 = split_file_path(&wav_path, 2);
+        let f3 = split_file_path(&wav_path, 3);
+        let f4 = split_file_path(&wav_path, 4);
+
+        // With max_data = 2 * split, max_split_files = 2.
+        // Files 1 and 2 should be evicted, 3 and 4 (or just 4) should remain.
+        assert!(!f1.exists(), "oldest file should be deleted");
+        assert!(!f2.exists(), "second oldest should be deleted");
+        // At least the last file should exist
+        assert!(
+            f3.exists() || f4.exists(),
+            "most recent file(s) should still exist"
+        );
+    }
+
+    #[test]
+    fn capture_empty_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav_path = dir.path().join("rec.wav");
+        let pcm: Vec<u8> = vec![];
+
+        let bytes = run_capture(&pcm, &wav_path, 2, 48000, 32, None, false, None);
+
+        assert_eq!(bytes, 0);
+        // File should just be the header
+        let meta = std::fs::metadata(&wav_path).unwrap();
+        assert_eq!(meta.len(), HEADER_SIZE);
+        assert_eq!(read_data_size(&wav_path), 0);
+    }
 }
