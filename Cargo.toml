@@ -1,12 +1,19 @@
 [package]
 name = "octotrack"
-version = "0.2.0"
+version = "0.2.2"
 authors = ["Jesse Stewart <jesse@jessestewart.com>"]
 license = "GPL-3.0-only"
 edition = "2021"
 
+[features]
+default = ["gui", "web"]
+gui = []     # will add: ["dep:eframe", "dep:egui"] in Phase 2
+web = []     # will add: ["dep:actix-web", "dep:actix-files", "dep:rust-embed"] in Phase 2
+headless = []
+
 [dependencies]
 anyhow = "1.0.83"
+clap = { version = "4", features = ["derive"] }
 color-eyre = "0.6.3"
 crossterm = "0.27.0"
 dirs = "5.0"
@@ -14,7 +21,10 @@ itertools = "0.13.0"
 libc = "0.2"
 palette = "0.7.6"
 ratatui = "0.26.0"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1.0.117"
+toml = "0.8"
+toml_edit = "0.22"
 walkdir = "2.5.0"
 
 [dev-dependencies]

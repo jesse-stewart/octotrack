@@ -4,6 +4,9 @@ pub mod audio;
 /// Application.
 pub mod app;
 
+/// Application configuration (TOML schema, load, save, migrate).
+pub mod config;
+
 /// Terminal events handler.
 pub mod event;
 

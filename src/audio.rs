@@ -1161,7 +1161,7 @@ fn free_bytes_on_path(path: &Path) -> Option<u64> {
     unsafe {
         let mut stat: libc::statvfs = std::mem::zeroed();
         if libc::statvfs(cpath.as_ptr(), &mut stat) == 0 {
-            Some(stat.f_bavail * stat.f_frsize)
+            Some(stat.f_bavail as u64 * stat.f_frsize as u64)
         } else {
             None
         }
