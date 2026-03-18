@@ -417,8 +417,8 @@ impl App {
                 .arg("json")
                 .arg(&first_file)
                 .output()
-                .unwrap_or_default()
-                .stdout;
+                .map(|o| o.stdout)
+                .unwrap_or_default();
             let meta_info: std::borrow::Cow<str> = String::from_utf8_lossy(&meta_info);
             let meta_info: serde_json::Value =
                 serde_json::from_str(&meta_info).unwrap_or(serde_json::Value::Null);
@@ -464,8 +464,8 @@ impl App {
                 .arg("json")
                 .arg(track_path)
                 .output()
-                .unwrap_or_default()
-                .stdout;
+                .map(|o| o.stdout)
+                .unwrap_or_default();
             let meta_info: std::borrow::Cow<str> = String::from_utf8_lossy(&meta_info);
             let meta_info: serde_json::Value =
                 serde_json::from_str(&meta_info).unwrap_or(serde_json::Value::Null);
