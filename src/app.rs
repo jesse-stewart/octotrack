@@ -1,8 +1,8 @@
 use crate::audio::{AudioPlayer, RecordingConfig};
+use crate::config::Config;
 use crate::schedule::{ScheduleAction, ScheduleMsg};
-use serde_json::{json, Value};
 use std::sync::mpsc;
-use std::{error, fs, path::PathBuf, process::Command, time::Instant};
+use std::{error, path::PathBuf, process::Command, time::Instant};
 use walkdir::WalkDir;
 
 /// Application result type.
@@ -71,6 +71,10 @@ pub struct App {
     pub is_monitoring: bool,
     pub start_track: String, // Filename (or partial name) to select on startup; "" = first track
     pub schedule_rx: Option<mpsc::Receiver<ScheduleMsg>>,
+    /// Full TOML config, kept in sync with flat runtime fields on save.
+    /// Sections not yet wired to runtime state (network, web, channels, etc.)
+    /// live here until their respective phases are implemented.
+    pub config: Config,
 }
 
 impl Default for App {
@@ -116,6 +120,7 @@ impl Default for App {
             is_monitoring: false,
             start_track: String::new(),
             schedule_rx: None,
+            config: Config::default(),
         }
     }
 }
@@ -728,224 +733,107 @@ impl App {
         }
     }
 
-    fn get_config_path() -> PathBuf {
-        dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("octotrack")
-            .join("config.json")
-    }
-
+    /// Load config from disk (TOML, or migrate from legacy JSON) and apply
+    /// all active fields to this App instance.
     pub fn load_config(&mut self) -> AppResult<()> {
-        let config_path = Self::get_config_path();
-
-        if config_path.exists() {
-            let config_str = fs::read_to_string(config_path)?;
-            let config: Value = serde_json::from_str(&config_str)?;
-
-            if let Some(volume) = config["volume"].as_u64() {
-                self.volume = volume as u8;
-            }
-            if let Some(max_volume) = config["max_volume"].as_u64() {
-                self.max_volume = max_volume as u8;
-            }
-            if let Some(auto_mode) = config["auto_mode"].as_str() {
-                self.auto_mode = match auto_mode {
-                    "play" => AutoMode::Play,
-                    "rec" => AutoMode::Rec,
-                    _ => AutoMode::Off,
-                };
-            } else if let Some(autoplay) = config["autoplay"].as_bool() {
-                // Backwards compat with old config
-                self.auto_mode = if autoplay {
-                    AutoMode::Play
-                } else {
-                    AutoMode::Off
-                };
-            }
-            if let Some(eq_bands) = config["eq_bands"].as_array() {
-                for (i, val) in eq_bands.iter().enumerate() {
-                    if i < 10 {
-                        if let Some(v) = val.as_i64() {
-                            self.eq_bands[i] = (v as i8).clamp(-12, 12);
-                        }
-                    }
-                }
-            }
-            if let Some(eq_enabled) = config["eq_enabled"].as_bool() {
-                self.eq_enabled = eq_enabled;
-            }
-            if let Some(playback_device) = config["playback_device"].as_str() {
-                self.playback_device = playback_device.to_string();
-            }
-            if let Some(playback_channel_count) = config["playback_channel_count"].as_u64() {
-                self.playback_channel_count = playback_channel_count as u32;
-            }
-            if let Some(rec_input_device) = config["rec_input_device"].as_str() {
-                self.rec_input_device = rec_input_device.to_string();
-            }
-            if let Some(rec_channel_count) = config["rec_channel_count"].as_u64() {
-                self.rec_channel_count = rec_channel_count as u32;
-            }
-            if let Some(rec_sample_rate) = config["rec_sample_rate"].as_u64() {
-                self.rec_sample_rate = rec_sample_rate as u32;
-            }
-            if let Some(rec_bit_depth) = config["rec_bit_depth"].as_u64() {
-                let bd = rec_bit_depth as u16;
-                if bd == 16 || bd == 24 || bd == 32 {
-                    self.rec_bit_depth = bd;
-                }
-            }
-            if let Some(rec_max_file_mb) = config["rec_max_file_mb"].as_u64() {
-                self.rec_max_file_mb = rec_max_file_mb;
-            }
-            if let Some(rec_max_file_mode) = config["rec_max_file_mode"].as_str() {
-                self.rec_max_file_mode = match rec_max_file_mode {
-                    "drop" => RecMaxMode::Drop,
-                    _ => RecMaxMode::Stop,
-                };
-            }
-            if let Some(rec_min_free_mb) = config["rec_min_free_mb"].as_u64() {
-                self.rec_min_free_mb = rec_min_free_mb;
-            }
-            if let Some(rec_split_file_mb) = config["rec_split_file_mb"].as_u64() {
-                self.rec_split_file_mb = rec_split_file_mb;
-            }
-            if let Some(mon_output_device) = config["mon_output_device"].as_str() {
-                self.mon_output_device = mon_output_device.to_string();
-            }
-            if let Some(loop_mode) = config["loop_mode"].as_str() {
-                self.loop_mode = match loop_mode {
-                    "single" => LoopMode::LoopSingle,
-                    "all" => LoopMode::LoopAll,
-                    _ => LoopMode::NoLoop,
-                };
-            }
-            if let Some(start_track) = config["start_track"].as_str() {
-                self.start_track = start_track.to_string();
-            }
-        }
-
+        let cfg = Config::load();
+        self.apply_config(&cfg);
+        self.config = cfg;
         Ok(())
     }
 
-    #[cfg(test)]
-    fn load_config_from_value(&mut self, config: &Value) {
-        if let Some(volume) = config["volume"].as_u64() {
-            self.volume = volume as u8;
+    /// Apply the fields of a `Config` that have runtime counterparts on `App`.
+    pub fn apply_config(&mut self, cfg: &Config) {
+        // [playback]
+        self.volume = cfg.playback.volume;
+        self.max_volume = cfg.playback.max_volume;
+        self.auto_mode = match cfg.playback.auto_mode.as_str() {
+            "play" => AutoMode::Play,
+            "rec" => AutoMode::Rec,
+            _ => AutoMode::Off,
+        };
+        self.loop_mode = match cfg.playback.loop_mode.as_str() {
+            "single" => LoopMode::LoopSingle,
+            "all" => LoopMode::LoopAll,
+            _ => LoopMode::NoLoop,
+        };
+        self.start_track = cfg.playback.start_track.clone();
+        self.playback_device = cfg.playback.device.clone();
+        self.playback_channel_count = cfg.playback.channel_count;
+
+        // [playback.eq]
+        let mut bands = [0i8; 10];
+        for (i, &b) in cfg.playback.eq.bands.iter().enumerate().take(10) {
+            bands[i] = b.clamp(-12, 12);
         }
-        if let Some(max_volume) = config["max_volume"].as_u64() {
-            self.max_volume = max_volume as u8;
+        self.eq_bands = bands;
+        self.eq_enabled = cfg.playback.eq.enabled;
+
+        // [recording]
+        self.rec_input_device = cfg.recording.input_device.clone();
+        self.rec_channel_count = cfg.recording.channel_count;
+        self.rec_sample_rate = cfg.recording.sample_rate;
+        let bd = cfg.recording.bit_depth;
+        if bd == 16 || bd == 24 || bd == 32 {
+            self.rec_bit_depth = bd;
         }
-        if let Some(auto_mode) = config["auto_mode"].as_str() {
-            self.auto_mode = match auto_mode {
-                "play" => AutoMode::Play,
-                "rec" => AutoMode::Rec,
-                _ => AutoMode::Off,
-            };
-        }
-        if let Some(eq_bands) = config["eq_bands"].as_array() {
-            for (i, val) in eq_bands.iter().enumerate() {
-                if i < 10 {
-                    if let Some(v) = val.as_i64() {
-                        self.eq_bands[i] = (v as i8).clamp(-12, 12);
-                    }
-                }
-            }
-        }
-        if let Some(eq_enabled) = config["eq_enabled"].as_bool() {
-            self.eq_enabled = eq_enabled;
-        }
-        if let Some(playback_device) = config["playback_device"].as_str() {
-            self.playback_device = playback_device.to_string();
-        }
-        if let Some(playback_channel_count) = config["playback_channel_count"].as_u64() {
-            self.playback_channel_count = playback_channel_count as u32;
-        }
-        if let Some(rec_input_device) = config["rec_input_device"].as_str() {
-            self.rec_input_device = rec_input_device.to_string();
-        }
-        if let Some(rec_channel_count) = config["rec_channel_count"].as_u64() {
-            self.rec_channel_count = rec_channel_count as u32;
-        }
-        if let Some(rec_sample_rate) = config["rec_sample_rate"].as_u64() {
-            self.rec_sample_rate = rec_sample_rate as u32;
-        }
-        if let Some(rec_bit_depth) = config["rec_bit_depth"].as_u64() {
-            let bd = rec_bit_depth as u16;
-            if bd == 16 || bd == 24 || bd == 32 {
-                self.rec_bit_depth = bd;
-            }
-        }
-        if let Some(rec_max_file_mb) = config["rec_max_file_mb"].as_u64() {
-            self.rec_max_file_mb = rec_max_file_mb;
-        }
-        if let Some(rec_max_file_mode) = config["rec_max_file_mode"].as_str() {
-            self.rec_max_file_mode = match rec_max_file_mode {
-                "drop" => RecMaxMode::Drop,
-                _ => RecMaxMode::Stop,
-            };
-        }
-        if let Some(rec_min_free_mb) = config["rec_min_free_mb"].as_u64() {
-            self.rec_min_free_mb = rec_min_free_mb;
-        }
-        if let Some(rec_split_file_mb) = config["rec_split_file_mb"].as_u64() {
-            self.rec_split_file_mb = rec_split_file_mb;
-        }
-        if let Some(loop_mode) = config["loop_mode"].as_str() {
-            self.loop_mode = match loop_mode {
-                "single" => LoopMode::LoopSingle,
-                "all" => LoopMode::LoopAll,
-                _ => LoopMode::NoLoop,
-            };
-        }
-        if let Some(start_track) = config["start_track"].as_str() {
-            self.start_track = start_track.to_string();
-        }
+        self.rec_max_file_mb = cfg.recording.max_file_mb;
+        self.rec_max_file_mode = match cfg.recording.max_file_mode.as_str() {
+            "drop" => RecMaxMode::Drop,
+            _ => RecMaxMode::Stop,
+        };
+        self.rec_min_free_mb = cfg.recording.min_free_mb;
+        self.rec_split_file_mb = cfg.recording.split_file_mb;
+
+        // [monitoring]
+        self.mon_output_device = cfg.monitoring.output_device.clone();
     }
 
+    /// Sync runtime App state back into `self.config` and write to disk.
     pub fn save_config(&self) -> AppResult<()> {
-        let config_path = Self::get_config_path();
+        let mut cfg = self.config.clone();
 
-        // Create config directory if it doesn't exist
-        if let Some(parent) = config_path.parent() {
-            fs::create_dir_all(parent)?;
+        // [playback]
+        cfg.playback.volume = self.volume;
+        cfg.playback.max_volume = self.max_volume;
+        cfg.playback.auto_mode = match self.auto_mode {
+            AutoMode::Off => "off",
+            AutoMode::Play => "play",
+            AutoMode::Rec => "rec",
         }
+        .to_string();
+        cfg.playback.loop_mode = match self.loop_mode {
+            LoopMode::NoLoop => "off",
+            LoopMode::LoopSingle => "single",
+            LoopMode::LoopAll => "all",
+        }
+        .to_string();
+        cfg.playback.start_track = self.start_track.clone();
+        cfg.playback.device = self.playback_device.clone();
+        cfg.playback.channel_count = self.playback_channel_count;
 
-        let eq_bands_vec: Vec<i8> = self.eq_bands.to_vec();
-        let config = json!({
-            "volume": self.volume,
-            "max_volume": self.max_volume,
-            "auto_mode": match self.auto_mode {
-                AutoMode::Off => "off",
-                AutoMode::Play => "play",
-                AutoMode::Rec => "rec",
-            },
-            "eq_bands": eq_bands_vec,
-            "eq_enabled": self.eq_enabled,
-            "playback_device": self.playback_device,
-            "playback_channel_count": self.playback_channel_count,
-            "rec_input_device": self.rec_input_device,
-            "rec_channel_count": self.rec_channel_count,
-            "rec_sample_rate": self.rec_sample_rate,
-            "rec_bit_depth": self.rec_bit_depth,
-            "rec_max_file_mb": self.rec_max_file_mb,
-            "rec_max_file_mode": match self.rec_max_file_mode {
-                RecMaxMode::Stop => "stop",
-                RecMaxMode::Drop => "drop",
-            },
-            "rec_min_free_mb": self.rec_min_free_mb,
-            "rec_split_file_mb": self.rec_split_file_mb,
-            "mon_output_device": self.mon_output_device,
-            "loop_mode": match self.loop_mode {
-                LoopMode::NoLoop => "off",
-                LoopMode::LoopSingle => "single",
-                LoopMode::LoopAll => "all",
-            },
-            "start_track": self.start_track,
-        });
+        // [playback.eq]
+        cfg.playback.eq.bands = self.eq_bands.to_vec();
+        cfg.playback.eq.enabled = self.eq_enabled;
 
-        fs::write(config_path, serde_json::to_string_pretty(&config)?)?;
+        // [recording]
+        cfg.recording.input_device = self.rec_input_device.clone();
+        cfg.recording.channel_count = self.rec_channel_count;
+        cfg.recording.sample_rate = self.rec_sample_rate;
+        cfg.recording.bit_depth = self.rec_bit_depth;
+        cfg.recording.max_file_mb = self.rec_max_file_mb;
+        cfg.recording.max_file_mode = match self.rec_max_file_mode {
+            RecMaxMode::Stop => "stop",
+            RecMaxMode::Drop => "drop",
+        }
+        .to_string();
+        cfg.recording.min_free_mb = self.rec_min_free_mb;
+        cfg.recording.split_file_mb = self.rec_split_file_mb;
 
+        // [monitoring]
+        cfg.monitoring.output_device = self.mon_output_device.clone();
+
+        cfg.save()?;
         Ok(())
     }
 }
@@ -1137,32 +1025,48 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Config loading from JSON value
+    // Config application (apply_config)
     // -----------------------------------------------------------------------
 
+    fn full_config() -> Config {
+        use crate::config::*;
+        Config {
+            playback: PlaybackConfig {
+                device: "hw:1,0".to_string(),
+                channel_count: 2,
+                volume: 75,
+                max_volume: 80,
+                loop_mode: "all".to_string(),
+                auto_mode: "rec".to_string(),
+                start_track: "my_song".to_string(),
+                eq: EqConfig {
+                    enabled: false,
+                    bands: vec![1, 2, 3, 4, 5, -1, -2, -3, -4, -5],
+                },
+            },
+            recording: RecordingSettings {
+                input_device: "hw:2,0".to_string(),
+                channel_count: 4,
+                sample_rate: 96_000,
+                bit_depth: 24,
+                max_file_mb: 4000,
+                max_file_mode: "drop".to_string(),
+                min_free_mb: 2048,
+                split_file_mb: 3900,
+                filename_template: "REC_{timestamp}".to_string(),
+            },
+            monitoring: MonitoringConfig {
+                output_device: "hw:3,0".to_string(),
+                ..MonitoringConfig::default()
+            },
+            ..Config::default()
+        }
+    }
+
     #[test]
-    fn load_config_from_value_applies_all_fields() {
+    fn apply_config_applies_all_fields() {
         let mut app = test_app();
-        let config = json!({
-            "volume": 75,
-            "max_volume": 80,
-            "auto_mode": "rec",
-            "eq_bands": [1, 2, 3, 4, 5, -1, -2, -3, -4, -5],
-            "eq_enabled": false,
-            "playback_device": "hw:1,0",
-            "playback_channel_count": 2,
-            "rec_input_device": "hw:2,0",
-            "rec_channel_count": 4,
-            "rec_sample_rate": 96000,
-            "rec_bit_depth": 24,
-            "rec_max_file_mb": 4000,
-            "rec_max_file_mode": "drop",
-            "rec_min_free_mb": 2048,
-            "rec_split_file_mb": 3900,
-            "loop_mode": "all",
-            "start_track": "my_song"
-        });
-        app.load_config_from_value(&config);
+        app.apply_config(&full_config());
 
         assert_eq!(app.volume, 75);
         assert_eq!(app.max_volume, 80);
@@ -1173,7 +1077,7 @@ mod tests {
         assert_eq!(app.playback_channel_count, 2);
         assert_eq!(app.rec_input_device, "hw:2,0");
         assert_eq!(app.rec_channel_count, 4);
-        assert_eq!(app.rec_sample_rate, 96000);
+        assert_eq!(app.rec_sample_rate, 96_000);
         assert_eq!(app.rec_bit_depth, 24);
         assert_eq!(app.rec_max_file_mb, 4000);
         assert_eq!(app.rec_max_file_mode, RecMaxMode::Drop);
@@ -1181,32 +1085,44 @@ mod tests {
         assert_eq!(app.rec_split_file_mb, 3900);
         assert_eq!(app.loop_mode, LoopMode::LoopAll);
         assert_eq!(app.start_track, "my_song");
+        assert_eq!(app.mon_output_device, "hw:3,0");
     }
 
     #[test]
-    fn load_config_ignores_invalid_bit_depth() {
+    fn apply_config_ignores_invalid_bit_depth() {
+        use crate::config::RecordingSettings;
         let mut app = test_app();
-        let config = json!({ "rec_bit_depth": 20 });
-        app.load_config_from_value(&config);
-        assert_eq!(app.rec_bit_depth, 32); // unchanged from default
+        let mut cfg = Config::default();
+        cfg.recording = RecordingSettings {
+            bit_depth: 20, // invalid
+            ..RecordingSettings::default()
+        };
+        app.apply_config(&cfg);
+        assert_eq!(app.rec_bit_depth, 32); // unchanged from App::default()
     }
 
     #[test]
-    fn load_config_clamps_eq_bands() {
+    fn apply_config_clamps_eq_bands() {
+        use crate::config::EqConfig;
         let mut app = test_app();
-        let config = json!({ "eq_bands": [99, -99, 0, 0, 0, 0, 0, 0, 0, 0] });
-        app.load_config_from_value(&config);
+        let mut cfg = Config::default();
+        cfg.playback.eq = EqConfig {
+            enabled: true,
+            bands: vec![99, -99, 0, 0, 0, 0, 0, 0, 0, 0],
+        };
+        app.apply_config(&cfg);
         assert_eq!(app.eq_bands[0], 12);
         assert_eq!(app.eq_bands[1], -12);
     }
 
     #[test]
-    fn load_config_partial_preserves_defaults() {
+    fn apply_config_partial_preserves_defaults() {
         let mut app = test_app();
-        let config = json!({ "volume": 42 });
-        app.load_config_from_value(&config);
+        let mut cfg = Config::default();
+        cfg.playback.volume = 42;
+        app.apply_config(&cfg);
         assert_eq!(app.volume, 42);
-        assert_eq!(app.rec_sample_rate, 192_000); // default preserved
+        assert_eq!(app.rec_sample_rate, 192_000); // App::default() preserved
     }
 
     // -----------------------------------------------------------------------

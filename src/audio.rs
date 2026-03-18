@@ -1154,6 +1154,7 @@ impl AudioPlayer {
 /// - If `wav_path` is Some, writes a WAV file (header finalised on EOF).
 /// - If `monitor_sink` contains Some(stdin), routes audio to aplay; clears on broken pipe.
 /// - Updates `levels` with per-channel RMS in dB.
+#[allow(clippy::useless_conversion)] // statvfs fields are u32 on 32-bit targets, u64 on 64-bit
 fn free_bytes_on_path(path: &Path) -> Option<u64> {
     use std::ffi::CString;
     let dir = path.parent().unwrap_or(path);
@@ -1161,7 +1162,7 @@ fn free_bytes_on_path(path: &Path) -> Option<u64> {
     unsafe {
         let mut stat: libc::statvfs = std::mem::zeroed();
         if libc::statvfs(cpath.as_ptr(), &mut stat) == 0 {
-            Some(stat.f_bavail * stat.f_frsize)
+            Some(u64::from(stat.f_bavail) * u64::from(stat.f_frsize))
         } else {
             None
         }

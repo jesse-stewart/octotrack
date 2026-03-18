@@ -1,3 +1,4 @@
+use clap::Parser;
 use octotrack::app::{App, AppResult, AutoMode};
 use octotrack::event::{Event, EventHandler};
 use octotrack::handler::handle_key_events;
@@ -8,6 +9,51 @@ use ratatui::Terminal;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+#[derive(Debug, Clone, PartialEq)]
+enum RunMode {
+    Headless,
+    Tui,
+    Gui,
+}
+
+#[derive(Parser, Debug)]
+#[command(
+    name = "octotrack",
+    about = "Multi-channel audio playback and recording"
+)]
+struct Cli {
+    /// Run as a headless background daemon
+    #[arg(long)]
+    headless: bool,
+
+    /// Force GUI mode
+    #[arg(long)]
+    gui: bool,
+
+    /// Run interactive password setup then exit
+    #[arg(long)]
+    set_password: bool,
+
+    /// Clear stored passwords and force first-run prompt
+    #[arg(long)]
+    reset: bool,
+}
+
+fn detect_mode(cli: &Cli) -> RunMode {
+    match (cli.headless, cli.gui) {
+        (true, _) => RunMode::Headless,
+        (_, true) => RunMode::Gui,
+        _ if has_display() => RunMode::Gui,
+        _ => RunMode::Tui,
+    }
+}
+
+fn has_display() -> bool {
+    std::env::var("DISPLAY").is_ok() || std::env::var("WAYLAND_DISPLAY").is_ok()
+}
 
 /// Finds the tracks directory, checking USB storage first, then falling back to local directory
 fn find_tracks_directory() -> String {
@@ -91,46 +137,12 @@ fn has_audio_files(dir: &Path) -> bool {
     false
 }
 
-fn main() -> AppResult<()> {
-    // Create an application.
-    let mut app = App::new();
-
-    // Load and start the cron scheduler if any schedules are configured.
-    let schedules = schedule::load_schedules();
-    if !schedules.is_empty() {
-        let (tx, rx) = std::sync::mpsc::channel();
-        schedule::run_scheduler(schedules, tx);
-        app.schedule_rx = Some(rx);
-    }
-
-    // Initialize the terminal user interface.
+fn run_tui(mut app: App) -> AppResult<()> {
     let backend = CrosstermBackend::new(io::stderr());
     let terminal = Terminal::new(backend)?;
     let events = EventHandler::new(250);
     let mut tui = Tui::new(terminal, events);
     tui.init()?;
-
-    // Find tracks directory (USB first, then local fallback)
-    let tracks_dir = find_tracks_directory();
-    app.load_tracks(&tracks_dir).unwrap();
-
-    // Get initial track metadata
-    if !app.track_list.is_empty() {
-        app.get_metadata();
-    }
-
-    // Auto action on startup
-    match app.auto_mode {
-        AutoMode::Rec => {
-            let _ = app.start_recording();
-        }
-        AutoMode::Play => {
-            if !app.track_list.is_empty() {
-                app.play();
-            }
-        }
-        AutoMode::Off => {}
-    }
 
     // Start the main loop.
     while app.running {
@@ -157,4 +169,66 @@ fn main() -> AppResult<()> {
     app.audio_player.stop()?;
     tui.exit()?;
     Ok(())
+}
+
+fn run_headless(app: Arc<Mutex<App>>) {
+    // start audio engine, web server, schedule runner
+    loop {
+        {
+            let mut app = app.lock().unwrap();
+            app.update_playback_info();
+            app.tick();
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+fn main() -> AppResult<()> {
+    let cli = Cli::parse();
+    let mode = detect_mode(&cli);
+
+    let mut app = App::new();
+
+    // Load and start the cron scheduler if any schedules are configured.
+    let schedules = schedule::load_schedules();
+    if !schedules.is_empty() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        schedule::run_scheduler(schedules, tx);
+        app.schedule_rx = Some(rx);
+    }
+
+    // Find tracks directory (USB first, then local fallback)
+    let tracks_dir = find_tracks_directory();
+    app.load_tracks(&tracks_dir).unwrap();
+
+    // Get initial track metadata
+    if !app.track_list.is_empty() {
+        app.get_metadata();
+    }
+
+    // Auto action on startup
+    match app.auto_mode {
+        AutoMode::Rec => {
+            let _ = app.start_recording();
+        }
+        AutoMode::Play => {
+            if !app.track_list.is_empty() {
+                app.play();
+            }
+        }
+        AutoMode::Off => {}
+    }
+
+    match mode {
+        RunMode::Tui => run_tui(app),
+        RunMode::Headless => {
+            let app = Arc::new(Mutex::new(app));
+            run_headless(app);
+            Ok(())
+        }
+        RunMode::Gui => {
+            // Phase 2: egui implementation — fall back to TUI for now
+            run_tui(app)
+        }
+    }
 }
