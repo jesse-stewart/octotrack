@@ -9,6 +9,11 @@ use std::time::Instant;
 #[cfg(unix)]
 extern crate libc;
 
+/// WAV header is always exactly 80 bytes (standard WAV with JUNK pad, or RF64 with ds64).
+const HEADER_SIZE: u64 = 80;
+/// Maximum data bytes that fit in a standard WAV (u32 size field minus the 36-byte overhead).
+const MAX_WAV_DATA: u64 = u32::MAX as u64 - 36;
+
 fn alsa_format(bit_depth: u16) -> &'static str {
     match bit_depth {
         16 => "S16_LE",
@@ -72,6 +77,109 @@ fn open_wav_file(
     f.write_all(b"data")?;
     f.write_all(&0u32.to_le_bytes())?;
     Ok(f)
+}
+
+/// Repair a WAV file whose header under-reports the actual data size (e.g. after
+/// a crash or power loss).  Reads the file size, compares it to the header's
+/// claimed data length, and rewrites the header if the file is larger.
+fn repair_wav_header(path: &Path) -> io::Result<bool> {
+    let meta = std::fs::metadata(path)?;
+    let file_size = meta.len();
+    if file_size <= HEADER_SIZE {
+        return Ok(false);
+    }
+
+    let mut f = OpenOptions::new().read(true).write(true).open(path)?;
+    let mut magic = [0u8; 4];
+    f.read_exact(&mut magic)?;
+    if &magic != b"RIFF" && &magic != b"RF64" {
+        return Ok(false);
+    }
+
+    let actual_data = file_size - HEADER_SIZE;
+
+    // Read claimed data size from header.
+    let claimed_data = if &magic == b"RF64" {
+        // ds64 dataSize is at offset 40 (8 bytes).
+        f.seek(SeekFrom::Start(40))?;
+        let mut buf = [0u8; 8];
+        f.read_exact(&mut buf)?;
+        u64::from_le_bytes(buf)
+    } else {
+        // Standard WAV: data chunk size at offset 76 (4 bytes).
+        f.seek(SeekFrom::Start(76))?;
+        let mut buf = [0u8; 4];
+        f.read_exact(&mut buf)?;
+        u32::from_le_bytes(buf) as u64
+    };
+
+    if actual_data <= claimed_data {
+        return Ok(false);
+    }
+
+    // Read fmt chunk fields (channels, sample_rate, byte_rate, block_align, bit_depth)
+    // starting at offset 58 (after RIFF/WAVE + JUNK/ds64 + "fmt " + fmt_size).
+    f.seek(SeekFrom::Start(58))?;
+    let mut hdr = [0u8; 14];
+    f.read_exact(&mut hdr)?;
+    let channels = u16::from_le_bytes([hdr[0], hdr[1]]) as u64;
+    let sample_rate = u32::from_le_bytes([hdr[2], hdr[3], hdr[4], hdr[5]]);
+    let byte_rate = u32::from_le_bytes([hdr[6], hdr[7], hdr[8], hdr[9]]);
+    let block_align = u16::from_le_bytes([hdr[10], hdr[11]]);
+    let bit_depth = u16::from_le_bytes([hdr[12], hdr[13]]);
+    let bps = bytes_per_sample(bit_depth) as u64;
+
+    // Align to frame boundary.
+    let frame_size = channels * bps;
+    if frame_size == 0 {
+        return Ok(false);
+    }
+    let aligned_data = (actual_data / frame_size) * frame_size;
+    let sample_count = aligned_data / bps;
+
+    // Rewrite the full 80-byte header.
+    f.seek(SeekFrom::Start(0))?;
+    if aligned_data <= MAX_WAV_DATA {
+        let riff_size = (aligned_data + (HEADER_SIZE - 8)) as u32;
+        f.write_all(b"RIFF")?;
+        f.write_all(&riff_size.to_le_bytes())?;
+        f.write_all(b"WAVE")?;
+        f.write_all(b"JUNK")?;
+        f.write_all(&28u32.to_le_bytes())?;
+        f.write_all(&[0u8; 28])?;
+    } else {
+        f.write_all(b"RF64")?;
+        f.write_all(&0xFFFFFFFFu32.to_le_bytes())?;
+        f.write_all(b"WAVE")?;
+        f.write_all(b"ds64")?;
+        f.write_all(&28u32.to_le_bytes())?;
+        let rf64_riff_size = aligned_data + (HEADER_SIZE - 8);
+        f.write_all(&rf64_riff_size.to_le_bytes())?;
+        f.write_all(&aligned_data.to_le_bytes())?;
+        f.write_all(&sample_count.to_le_bytes())?;
+        f.write_all(&0u32.to_le_bytes())?;
+    }
+    f.write_all(b"fmt ")?;
+    f.write_all(&16u32.to_le_bytes())?;
+    f.write_all(&1u16.to_le_bytes())?;
+    f.write_all(&(channels as u16).to_le_bytes())?;
+    f.write_all(&sample_rate.to_le_bytes())?;
+    f.write_all(&byte_rate.to_le_bytes())?;
+    f.write_all(&block_align.to_le_bytes())?;
+    f.write_all(&bit_depth.to_le_bytes())?;
+    f.write_all(b"data")?;
+    if aligned_data <= MAX_WAV_DATA {
+        f.write_all(&(aligned_data as u32).to_le_bytes())?;
+    } else {
+        f.write_all(&0xFFFFFFFFu32.to_le_bytes())?;
+    }
+    f.flush()?;
+
+    log(&format!(
+        "repair_wav_header: {:?} repaired: claimed={} actual={}",
+        path, claimed_data, aligned_data
+    ));
+    Ok(true)
 }
 
 fn log_path() -> PathBuf {
@@ -268,6 +376,13 @@ impl AudioPlayer {
 
             audio_files.sort();
 
+            // Repair any WAV files with stale headers (e.g. from crash/power loss).
+            for f in &audio_files {
+                if f.extension().is_some_and(|e| e.eq_ignore_ascii_case("wav")) {
+                    let _ = repair_wav_header(f);
+                }
+            }
+
             if audio_files.is_empty() {
                 return Ok(());
             }
@@ -394,6 +509,14 @@ impl AudioPlayer {
         eq_enabled: bool,
         playback_device: &str,
     ) -> io::Result<()> {
+        // Repair WAV header if it was left stale by a crash/power loss.
+        if file_path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("wav"))
+        {
+            let _ = repair_wav_header(file_path);
+        }
+
         // Use mplayer's built-in volume control with slave mode for dynamic control
         let mut cmd = Command::new("mplayer");
         cmd.arg("-slave")
@@ -463,6 +586,13 @@ impl AudioPlayer {
             .collect();
 
         audio_files.sort();
+
+        // Repair any WAV files with stale headers (e.g. from crash/power loss).
+        for f in &audio_files {
+            if f.extension().is_some_and(|e| e.eq_ignore_ascii_case("wav")) {
+                let _ = repair_wav_header(f);
+            }
+        }
 
         if audio_files.is_empty() {
             return Err(io::Error::new(
@@ -1059,12 +1189,6 @@ fn capture_and_analyse<R: Read>(
     let byte_rate = sample_rate * channels as u32 * bps as u32;
     let block_align = channels as u16 * bps as u16;
 
-    // Header is always 80 bytes. For data < 4 GiB we write standard WAV + JUNK pad;
-    // for data >= 4 GiB we write RF64 with a ds64 chunk. Both are exactly 80 bytes
-    // so the PCM data always starts at offset 80.
-    const HEADER_SIZE: u64 = 80;
-    const MAX_WAV_DATA: u64 = u32::MAX as u64 - 36;
-
     let write_header = |f: &mut File, data_bytes: u64| -> io::Result<()> {
         f.seek(SeekFrom::Start(0))?;
         let sample_count = data_bytes / bps as u64;
@@ -1147,8 +1271,14 @@ fn capture_and_analyse<R: Read>(
     let mut stopped_by_limit = false;
     let mut bytes_since_free_check: u64 = 0;
     const FREE_CHECK_INTERVAL: u64 = 4 * 1024 * 1024; // check every 4 MB written
-                                                      // total_bytes accumulates across all split files; used for the UI counter.
-                                                      // logical_bytes tracks only the current file (for header finalisation and drop-mode).
+
+    // Periodic header flush for crash safety (~10 seconds of audio between flushes).
+    // Disabled for circular drop mode (header can only be finalized after linearization).
+    let periodic_flush = !(drop_mode && split_size_bytes.is_none());
+    let flush_interval_bytes: u64 = byte_rate as u64 * 10;
+    let mut bytes_since_flush: u64 = 0;
+    // total_bytes accumulates across all split files; used for the UI counter.
+    // logical_bytes tracks only the current file (for header finalisation and drop-mode).
     let mut total_bytes: u64 = 0;
     let mut split_file_index: u32 = 1; // current split file number (1-based)
                                        // In drop+split mode: queue of completed file paths for oldest-first eviction.
@@ -1217,6 +1347,7 @@ fn capture_and_analyse<R: Read>(
                                     .map(|f| (f, 0u64));
                                 logical_bytes = 0;
                                 write_offset = HEADER_SIZE;
+                                bytes_since_flush = 0;
                                 if wav.is_none() {
                                     log(&format!(
                                         "capture_and_analyse: failed to open split file {:?}, stopping",
@@ -1306,6 +1437,25 @@ fn capture_and_analyse<R: Read>(
 
                     if stopped_by_limit {
                         break;
+                    }
+
+                    // Periodic header flush: rewrite header with current data size so
+                    // a crash/power loss leaves a valid (if slightly short) WAV file.
+                    if periodic_flush {
+                        bytes_since_flush += n as u64;
+                        if bytes_since_flush >= flush_interval_bytes {
+                            bytes_since_flush = 0;
+                            if let Some((ref mut f, _)) = wav {
+                                if write_header(f, logical_bytes).is_ok() {
+                                    let _ = f.seek(SeekFrom::Start(write_offset));
+                                    #[cfg(unix)]
+                                    {
+                                        use std::os::unix::io::AsRawFd;
+                                        unsafe { libc::fsync(f.as_raw_fd()) };
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     // Disk space guard: check periodically.
@@ -1500,5 +1650,154 @@ impl Drop for AudioPlayer {
     fn drop(&mut self) {
         let _ = self.stop_capture();
         let _ = self.stop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: create a valid WAV file with octotrack's 80-byte header and fake PCM data.
+    fn create_test_wav(
+        path: &Path,
+        channels: usize,
+        sample_rate: u32,
+        bit_depth: u16,
+        data_bytes: usize,
+    ) {
+        let mut f = open_wav_file(path, channels, sample_rate, bit_depth).unwrap();
+        // Write fake PCM data (zeros are valid silent audio).
+        let data = vec![0u8; data_bytes];
+        f.write_all(&data).unwrap();
+        // Finalize header with correct data size.
+        f.seek(SeekFrom::Start(0)).unwrap();
+        let bps = bytes_per_sample(bit_depth);
+        let byte_rate = sample_rate * channels as u32 * bps as u32;
+        let block_align = channels as u16 * bps as u16;
+        let data_bytes = data_bytes as u64;
+        if data_bytes <= MAX_WAV_DATA {
+            let riff_size = (data_bytes + (HEADER_SIZE - 8)) as u32;
+            f.write_all(b"RIFF").unwrap();
+            f.write_all(&riff_size.to_le_bytes()).unwrap();
+            f.write_all(b"WAVE").unwrap();
+            f.write_all(b"JUNK").unwrap();
+            f.write_all(&28u32.to_le_bytes()).unwrap();
+            f.write_all(&[0u8; 28]).unwrap();
+        }
+        f.write_all(b"fmt ").unwrap();
+        f.write_all(&16u32.to_le_bytes()).unwrap();
+        f.write_all(&1u16.to_le_bytes()).unwrap();
+        f.write_all(&(channels as u16).to_le_bytes()).unwrap();
+        f.write_all(&sample_rate.to_le_bytes()).unwrap();
+        f.write_all(&byte_rate.to_le_bytes()).unwrap();
+        f.write_all(&block_align.to_le_bytes()).unwrap();
+        f.write_all(&bit_depth.to_le_bytes()).unwrap();
+        f.write_all(b"data").unwrap();
+        f.write_all(&(data_bytes as u32).to_le_bytes()).unwrap();
+        f.flush().unwrap();
+    }
+
+    /// Read the data chunk size from offset 76 of an 80-byte octotrack WAV header.
+    fn read_data_size(path: &Path) -> u32 {
+        let mut f = File::open(path).unwrap();
+        f.seek(SeekFrom::Start(76)).unwrap();
+        let mut buf = [0u8; 4];
+        f.read_exact(&mut buf).unwrap();
+        u32::from_le_bytes(buf)
+    }
+
+    /// Zero out the data chunk size at offset 76 (simulates a crash).
+    fn corrupt_data_size(path: &Path) {
+        let mut f = OpenOptions::new().write(true).open(path).unwrap();
+        f.seek(SeekFrom::Start(76)).unwrap();
+        f.write_all(&0u32.to_le_bytes()).unwrap();
+        f.flush().unwrap();
+    }
+
+    #[test]
+    fn repair_fixes_zeroed_data_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.wav");
+        let data_bytes = 48000 * 2 * 4 * 10; // 10s of stereo 32-bit 48kHz
+        create_test_wav(&path, 2, 48000, 32, data_bytes);
+
+        assert_eq!(read_data_size(&path), data_bytes as u32);
+        corrupt_data_size(&path);
+        assert_eq!(read_data_size(&path), 0);
+
+        let repaired = repair_wav_header(&path).unwrap();
+        assert!(repaired);
+        assert_eq!(read_data_size(&path), data_bytes as u32);
+    }
+
+    #[test]
+    fn repair_skips_correct_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("good.wav");
+        let data_bytes = 48000 * 2 * 4; // 1s
+        create_test_wav(&path, 2, 48000, 32, data_bytes);
+
+        let repaired = repair_wav_header(&path).unwrap();
+        assert!(!repaired);
+        assert_eq!(read_data_size(&path), data_bytes as u32);
+    }
+
+    #[test]
+    fn repair_handles_8_channel_32bit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("8ch.wav");
+        let data_bytes = 48000 * 8 * 4 * 5; // 5s of 8-channel 32-bit
+        create_test_wav(&path, 8, 48000, 32, data_bytes);
+
+        corrupt_data_size(&path);
+        let repaired = repair_wav_header(&path).unwrap();
+        assert!(repaired);
+        assert_eq!(read_data_size(&path), data_bytes as u32);
+    }
+
+    #[test]
+    fn repair_handles_16bit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("16bit.wav");
+        let data_bytes = 48000 * 2 * 2 * 3; // 3s of stereo 16-bit
+        create_test_wav(&path, 2, 48000, 16, data_bytes);
+
+        corrupt_data_size(&path);
+        let repaired = repair_wav_header(&path).unwrap();
+        assert!(repaired);
+        assert_eq!(read_data_size(&path), data_bytes as u32);
+    }
+
+    #[test]
+    fn repair_handles_24bit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("24bit.wav");
+        let data_bytes = 48000 * 2 * 3 * 3; // 3s of stereo 24-bit
+        create_test_wav(&path, 2, 48000, 24, data_bytes);
+
+        corrupt_data_size(&path);
+        let repaired = repair_wav_header(&path).unwrap();
+        assert!(repaired);
+        assert_eq!(read_data_size(&path), data_bytes as u32);
+    }
+
+    #[test]
+    fn repair_skips_non_wav() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("not_a_wav.wav");
+        std::fs::write(&path, b"this is not a wav file at all").unwrap();
+
+        let repaired = repair_wav_header(&path).unwrap();
+        assert!(!repaired);
+    }
+
+    #[test]
+    fn repair_skips_tiny_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tiny.wav");
+        std::fs::write(&path, &[0u8; 40]).unwrap();
+
+        let repaired = repair_wav_header(&path).unwrap();
+        assert!(!repaired);
     }
 }
