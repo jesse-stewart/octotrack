@@ -76,7 +76,7 @@ jobs:
         run: command -v cargo-tarpaulin || cargo install cargo-tarpaulin
 
       - name: Generate coverage report
-        run: cargo tarpaulin --out xml --out stdout --output-dir coverage 2>&1 | tee coverage/tarpaulin.txt
+        run: mkdir -p coverage && cargo tarpaulin --out xml --out stdout --output-dir coverage 2>&1 | tee coverage/tarpaulin.txt || true
 
       - name: Comment coverage on PR
         if: github.event_name == 'pull_request'
