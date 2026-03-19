@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Login</title>
+  <link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+  <div class="login-wrap">
+    <div class="login-card">
+      <h1>Password</h1>
+      <form id="login-form">
+        <div class="form-group">
+          <input type="password" id="password" placeholder="Enter password" autofocus autocomplete="current-password">
+        </div>
+        <button type="submit" class="primary" style="width:100%">Sign in</button>
+        <div class="error-msg" id="error-msg"></div>
+      </form>
+    </div>
+  </div>
+  <script>
+    document.getElementById('login-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const password = document.getElementById('password').value;
+      const errEl = document.getElementById('error-msg');
+      errEl.textContent = '';
+      try {
+        const resp = await fetch('/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password }),
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          localStorage.setItem('octotrack_token', data.token);
+          window.location.href = '/dashboard';
+        } else {
+          errEl.textContent = 'Incorrect password.';
+          document.getElementById('password').value = '';
+          document.getElementById('password').focus();
+        }
+      } catch (err) {
+        errEl.textContent = 'Connection error.';
+      }
+    });
+
+    // If already logged in, redirect to dashboard
+    if (localStorage.getItem('octotrack_token')) {
+      window.location.href = '/dashboard';
+    }
+  </script>
+</body>
+</html>

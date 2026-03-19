@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Recording</title>
+  <link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+  <nav>
+    <a href="/dashboard">Dashboard</a>
+    <a href="/playback">Playback</a>
+    <a href="/files">Files</a>
+    <a href="/recording" class="active">Recording</a>
+    <a href="/settings">Settings</a>
+    <span style="flex:1"></span>
+    <a href="#" id="logout-btn">Logout</a>
+  </nav>
+  <div class="container">
+    <div class="card">
+      <h2>Recording</h2>
+      <div id="rec-status" style="margin-bottom:1rem">
+        <span class="badge badge-green" id="rec-badge" style="display:none">Recording</span>
+        <span style="color:var(--text-muted)" id="rec-idle">Idle</span>
+      </div>
+      <div class="row" style="margin-bottom:1rem">
+        <div>
+          <label>File</label>
+          <div id="rec-path" style="font-family:monospace;font-size:0.85rem;color:var(--text-muted)">—</div>
+        </div>
+        <div>
+          <label>Size</label>
+          <div id="rec-size">—</div>
+        </div>
+        <div>
+          <label>Duration</label>
+          <div id="rec-duration">—</div>
+        </div>
+      </div>
+      <div class="transport-controls">
+        <button id="btn-start-rec" class="primary">Start Recording</button>
+        <button id="btn-stop-rec">Stop Recording</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Input Levels</h2>
+      <canvas class="meter" id="level-canvas"></canvas>
+    </div>
+  </div>
+  <script src="/assets/app.js"></script>
+  <script>
+    if (!getToken()) redirectToLogin();
+
+    const recBadge = document.getElementById('rec-badge');
+    const recIdle = document.getElementById('rec-idle');
+    const recPath = document.getElementById('rec-path');
+    const recSize = document.getElementById('rec-size');
+    const recDur = document.getElementById('rec-duration');
+    const levelCanvas = document.getElementById('level-canvas');
+
+    function fmtSize(bytes) {
+      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+      if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+      return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+    }
+
+    function fmtTime(secs) {
+      const h = Math.floor(secs / 3600);
+      const m = Math.floor((secs % 3600) / 60);
+      const s = Math.floor(secs % 60).toString().padStart(2, '0');
+      return h > 0 ? h + ':' + String(m).padStart(2,'0') + ':' + s : m + ':' + s;
+    }
+
+    // Levels arrive as dBFS in range -60..0; map linearly to 0..1 for the meter bar.
+    function dbToNorm(db) { return Math.max(0, (db + 60) / 60); }
+
+    onSseEvent('levels', (e) => {
+      renderLevels(levelCanvas, e.input.map(dbToNorm));
+    });
+
+    onSseEvent('recording_progress', (e) => {
+      recBadge.style.display = 'inline-block';
+      recIdle.style.display = 'none';
+      recPath.textContent = e.path || '—';
+      recSize.textContent = fmtSize(e.size_bytes);
+      recDur.textContent = fmtTime(e.duration_secs);
+    });
+
+    onSseEvent('device_status', (e) => {
+      if (e.recording) {
+        recBadge.style.display = 'inline-block';
+        recIdle.style.display = 'none';
+      } else {
+        recBadge.style.display = 'none';
+        recIdle.style.display = 'inline';
+      }
+    });
+
+    document.getElementById('btn-start-rec').addEventListener('click', () => apiFetch('POST', '/api/recording/start'));
+    document.getElementById('btn-stop-rec').addEventListener('click', () => apiFetch('POST', '/api/recording/stop'));
+
+    document.getElementById('logout-btn').addEventListener('click', async (e) => {
+      e.preventDefault();
+      await apiFetch('POST', '/auth/logout');
+      clearToken();
+      window.location.href = '/';
+    });
+
+    connectSse();
+  </script>
+</body>
+</html>

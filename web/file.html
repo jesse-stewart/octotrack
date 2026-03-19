@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>File</title>
+  <link rel="stylesheet" href="/assets/style.css">
+  <style>
+    .file-title { font-size:1.2rem; font-weight:600; margin-bottom:1rem;
+                  word-break:break-all; }
+    .meta-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr));
+                 gap:0.6rem 1.2rem; margin-bottom:1rem; }
+    .meta-item { display:flex; flex-direction:column; gap:0.1rem; }
+    .meta-label { font-size:0.7rem; color:var(--text-muted); text-transform:uppercase;
+                  letter-spacing:0.05em; }
+    .meta-value { font-size:0.95rem; font-weight:500; }
+    .waveform-wrap { position:relative; width:100%; margin:1rem 0; }
+    .waveform-wrap canvas { width:100%; display:block; border-radius:4px; }
+    .ch-labels { position:absolute; top:0; left:0; pointer-events:none; }
+    .audio-wrap { margin-bottom:0.75rem; }
+    .audio-wrap audio { width:100%; height:40px; }
+    .actions { display:flex; gap:0.6rem; flex-wrap:wrap; margin-top:0.5rem; }
+    .back-link { display:inline-flex; align-items:center; gap:0.35rem; color:var(--text-muted);
+                 font-size:0.85rem; text-decoration:none; margin-bottom:1rem; }
+    .back-link:hover { color:var(--text); }
+  </style>
+</head>
+<body>
+  <nav>
+    <a href="/dashboard">Dashboard</a>
+    <a href="/playback">Playback</a>
+    <a href="/files" class="active">Files</a>
+    <a href="/recording">Recording</a>
+    <a href="/settings">Settings</a>
+    <span style="flex:1"></span>
+    <a href="#" id="logout-btn">Logout</a>
+  </nav>
+  <div class="container">
+    <a href="/files" class="back-link">&#8592; Back to Files</a>
+
+    <div class="card" id="main-card">
+      <div id="file-title" class="file-title">Loading…</div>
+
+      <!-- Meta -->
+      <div class="meta-grid" id="meta-grid"></div>
+
+      <!-- Waveform -->
+      <div class="waveform-wrap" id="waveform-wrap" style="display:none">
+        <canvas id="waveform-canvas"></canvas>
+        <div id="waveform-status" style="color:var(--text-muted);font-size:0.85rem;padding:0.5rem 0;display:none"></div>
+      </div>
+
+      <!-- Audio player -->
+      <div class="audio-wrap">
+        <audio id="audio-player" controls preload="none" style="width:100%;height:40px"></audio>
+        <div id="audio-note" style="font-size:0.75rem;color:var(--text-muted);margin-top:0.25rem"></div>
+      </div>
+
+      <!-- Actions -->
+      <div class="actions">
+        <button id="btn-play-device" class="primary">&#9654; Play on Device</button>
+        <a id="btn-download" class="btn" style="text-decoration:none">&#x2B07; Download</a>
+        <button id="btn-delete" class="danger">&#x1F5D1; Delete</button>
+      </div>
+      <div id="play-device-msg" style="font-size:0.8rem;color:var(--text-muted);margin-top:0.4rem"></div>
+    </div>
+  </div>
+
+  <script src="/assets/app.js"></script>
+  <script>
+    if (!getToken()) redirectToLogin();
+
+    const params = new URLSearchParams(location.search);
+    const fileName = params.get('name');
+    if (!fileName) {
+      document.getElementById('file-title').textContent = 'No file specified.';
+    }
+
+    // ── helpers ─────────────────────────────────────────────────────────────
+
+    function fmtTime(secs) {
+      if (!secs && secs !== 0) return '—';
+      const h = Math.floor(secs / 3600);
+      const m = Math.floor((secs % 3600) / 60);
+      const s = Math.floor(secs % 60).toString().padStart(2, '0');
+      return h > 0 ? h + ':' + String(m).padStart(2,'0') + ':' + s : m + ':' + s;
+    }
+
+    function fmtBytes(b) {
+      if (b >= 1e9) return (b / 1e9).toFixed(2) + ' GB';
+      if (b >= 1e6) return (b / 1e6).toFixed(1) + ' MB';
+      return (b / 1e3).toFixed(0) + ' KB';
+    }
+
+    function fmtDate(secs) {
+      if (!secs) return '—';
+      return new Date(secs * 1000).toLocaleString();
+    }
+
+    // ── waveform renderer (larger CH_H for detail view) ──────────────────────
+
+    const COLORS = ['#4caf50','#2196f3','#ff9800','#e91e63','#9c27b0','#00bcd4','#ffeb3b','#f44336'];
+
+    function renderWaveformDetail(canvas, channels) {
+      if (!canvas || !channels || channels.length === 0) return;
+      const CH_H = 80;
+      const GAP  = 4;
+      const nCh  = channels.length;
+      const totalH = nCh * CH_H + (nCh - 1) * GAP;
+      const w = canvas.parentElement.clientWidth || 800;
+      canvas.width  = w;
+      canvas.height = totalH;
+      canvas.style.height = totalH + 'px';
+
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#121212';
+      ctx.fillRect(0, 0, w, totalH);
+
+      for (let c = 0; c < nCh; c++) {
+        const peaks = channels[c];
+        if (!peaks || peaks.length === 0) continue;
+        const yTop = c * (CH_H + GAP);
+        const mid  = yTop + CH_H / 2;
+        const color = COLORS[c % COLORS.length];
+
+        // Channel label background strip
+        ctx.fillStyle = '#1a1a1a';
+        ctx.fillRect(0, yTop, w, CH_H);
+
+        // Channel label
+        ctx.fillStyle = color;
+        ctx.font = '11px monospace';
+        ctx.globalAlpha = 0.7;
+        ctx.fillText('Ch ' + (c + 1), 6, yTop + 14);
+        ctx.globalAlpha = 1.0;
+
+        // Center line
+        ctx.fillStyle = '#2a2a2a';
+        ctx.fillRect(0, mid, w, 1);
+
+        // Waveform bars
+        ctx.fillStyle = color;
+        const n = peaks.length;
+        for (let i = 0; i < n; i++) {
+          const x   = (i / n) * w;
+          const pw  = Math.max(1, w / n);
+          const amp = peaks[i] * (CH_H / 2);
+          ctx.fillRect(x, mid - amp, pw, amp * 2 || 1);
+        }
+      }
+    }
+
+    // ── load file info ───────────────────────────────────────────────────────
+
+    async function loadFile() {
+      if (!fileName) return;
+
+      const enc = encodeURIComponent(fileName);
+      document.title = fileName;
+      document.getElementById('file-title').textContent = fileName;
+
+      // Set up download + delete buttons
+      document.getElementById('btn-download').href = '/api/files/' + enc;
+      document.getElementById('btn-download').download = fileName;
+
+      document.getElementById('btn-delete').addEventListener('click', async () => {
+        if (!confirm('Delete ' + fileName + '?')) return;
+        const r = await apiFetch('DELETE', '/api/files/' + enc);
+        if (r && r.ok) window.location.href = '/files';
+      });
+
+      // Fetch full metadata via detail endpoint (runs ffprobe)
+      const infoResp = await apiFetch('GET', '/api/files/' + enc + '/detail');
+      if (infoResp && infoResp.ok) {
+        const info = await infoResp.json();
+        renderMeta(info);
+      }
+
+      // Audio player — set src always; browser shows error if unsupported
+      const player = document.getElementById('audio-player');
+      player.src = '/api/files/' + enc;
+      const browserPlayable = /\.(mp3|ogg|flac|m4a|wav)$/i.test(fileName);
+      if (!browserPlayable) {
+        document.getElementById('audio-note').textContent =
+          'Browser preview may not be available for this format.';
+      }
+
+      // Play on Device button
+      document.getElementById('btn-play-device').addEventListener('click', async () => {
+        const msg = document.getElementById('play-device-msg');
+        const r = await apiFetch('POST', '/api/transport/load', { name: fileName });
+        if (r && r.ok) {
+          msg.textContent = 'Now playing on device.';
+        } else {
+          msg.textContent = 'Could not load track — is it in the tracks directory?';
+        }
+        setTimeout(() => { msg.textContent = ''; }, 4000);
+      });
+
+      // Waveform
+      loadWaveform(enc);
+    }
+
+    function fmtBitRate(bps) {
+      if (!bps) return '—';
+      if (bps >= 1e6) return (bps / 1e6).toFixed(2) + ' Mbps';
+      return Math.round(bps / 1000) + ' kbps';
+    }
+
+    function fmtSampleRate(hz) {
+      if (!hz) return '—';
+      return (hz >= 1000 ? (hz / 1000).toLocaleString() + ' kHz' : hz + ' Hz');
+    }
+
+    function codecLabel(codec) {
+      if (!codec) return '—';
+      const map = {
+        'pcm_s16le': 'PCM 16-bit LE', 'pcm_s24le': 'PCM 24-bit LE',
+        'pcm_s32le': 'PCM 32-bit LE', 'pcm_f32le': 'PCM 32-bit float LE',
+        'pcm_s16be': 'PCM 16-bit BE', 'pcm_s24be': 'PCM 24-bit BE',
+        'flac': 'FLAC', 'mp3': 'MP3', 'aac': 'AAC', 'vorbis': 'Vorbis',
+        'opus': 'Opus', 'alac': 'ALAC',
+      };
+      return map[codec] || codec;
+    }
+
+    function renderMeta(info) {
+      const grid = document.getElementById('meta-grid');
+      const items = [
+        ['Size',        fmtBytes(info.size_bytes)],
+        ['Duration',    fmtTime(info.duration_secs)],
+        ['Channels',    info.channels != null && info.channels > 0 ? info.channels : '—'],
+        ['Sample Rate', fmtSampleRate(info.sample_rate)],
+        ['Bit Depth',   info.bits_per_sample > 0 ? info.bits_per_sample + '-bit' : '—'],
+        ['Bit Rate',    fmtBitRate(info.bit_rate_bps)],
+        ['Codec',       codecLabel(info.codec)],
+        ['Format',      info.format_long_name || info.format_name || '—'],
+        ['Modified',    fmtDate(info.modified_secs)],
+        ['Path',        info.path || '—'],
+      ];
+      grid.innerHTML = items.map(([label, val]) => `
+        <div class="meta-item">
+          <span class="meta-label">${label}</span>
+          <span class="meta-value" style="word-break:break-all">${val}</span>
+        </div>`).join('');
+    }
+
+    async function loadWaveform(enc, attempt) {
+      attempt = attempt || 0;
+      const wrapEl   = document.getElementById('waveform-wrap');
+      const statusEl = document.getElementById('waveform-status');
+      const canvas   = document.getElementById('waveform-canvas');
+
+      wrapEl.style.display = '';
+      statusEl.style.display = '';
+      statusEl.textContent = attempt === 0 ? 'Loading waveform…' : 'Generating waveform…';
+
+      const resp = await apiFetch('GET', '/api/files/' + enc + '/peaks');
+      if (!resp) return;
+
+      if (resp.status === 202) {
+        if (attempt < 20) {
+          setTimeout(() => loadWaveform(enc, attempt + 1), 2000);
+        } else {
+          statusEl.textContent = 'Waveform unavailable.';
+        }
+        return;
+      }
+
+      if (!resp.ok) {
+        statusEl.textContent = 'Waveform could not be generated.';
+        return;
+      }
+
+      const peaks = await resp.json();
+      statusEl.style.display = 'none';
+      renderWaveformDetail(canvas, peaks);
+    }
+
+    // ── logout ───────────────────────────────────────────────────────────────
+
+    document.getElementById('logout-btn').addEventListener('click', async (e) => {
+      e.preventDefault();
+      await apiFetch('POST', '/auth/logout');
+      clearToken();
+      window.location.href = '/';
+    });
+
+    loadFile();
+  </script>
+</body>
+</html>

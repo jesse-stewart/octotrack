@@ -24,3 +24,9 @@ pub mod bigtext;
 
 /// Cron-style task scheduler.
 pub mod schedule;
+
+/// First-run setup and factory reset.
+pub mod setup;
+
+/// Web UI server (actix-web).
+pub mod web;
