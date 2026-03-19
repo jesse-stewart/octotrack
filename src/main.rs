@@ -578,9 +578,7 @@ fn start_access_point(config: &Config) -> Result<(), Box<dyn std::error::Error>>
     }
 
     // Bring the connection up.
-    let status = Command::new(nmcli)
-        .args(["con", "up", con_name])
-        .status()?;
+    let status = Command::new(nmcli).args(["con", "up", con_name]).status()?;
     if !status.success() {
         return Err("nmcli con up failed".into());
     }
