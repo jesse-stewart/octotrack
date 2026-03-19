@@ -8,6 +8,19 @@ use walkdir::WalkDir;
 /// Application result type.
 pub type AppResult<T> = std::result::Result<T, Box<dyn error::Error>>;
 
+/// Commands sent from the web server to the App main loop.
+pub enum AppCommand {
+    Play,
+    Stop,
+    Prev,
+    Next,
+    Seek(f32),
+    StartRecording,
+    StopRecording,
+    JumpToTrack(usize),
+    RemoveTrack(PathBuf),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LoopMode {
     NoLoop,
@@ -130,6 +143,15 @@ impl App {
     pub fn new() -> Self {
         let mut app = Self::default();
         let _ = app.load_config();
+        app
+    }
+
+    /// Constructs a new [`App`] from an already-loaded [`Config`].
+    /// Used when the caller has pre-loaded or mutated config (e.g. first-run setup).
+    pub fn new_with_config(config: Config) -> Self {
+        let mut app = Self::default();
+        app.apply_config(&config);
+        app.config = config;
         app
     }
 

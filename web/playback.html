@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Playback</title>
+  <link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+  <nav>
+    <a href="/dashboard">Dashboard</a>
+    <a href="/playback" class="active">Playback</a>
+    <a href="/files">Files</a>
+    <a href="/recording">Recording</a>
+    <a href="/settings">Settings</a>
+    <span style="flex:1"></span>
+    <a href="#" id="logout-btn">Logout</a>
+  </nav>
+  <div class="container">
+    <div class="card">
+      <h2>Now Playing</h2>
+      <div class="track-info" id="track-name">—</div>
+      <div class="track-meta" id="track-meta"></div>
+      <div class="progress-bar" id="progress-bar">
+        <div class="progress-fill" id="progress-fill" style="width:0%"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:0.8rem;color:var(--text-muted)">
+        <span id="pos-label">0:00</span>
+        <span id="dur-label">0:00</span>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Transport</h2>
+      <div class="transport-controls">
+        <button id="btn-prev">&#9664;&#9664;</button>
+        <button id="btn-play" class="primary">&#9654;</button>
+        <button id="btn-stop">&#9632;</button>
+        <button id="btn-next">&#9654;&#9654;</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Levels</h2>
+      <canvas class="meter" id="level-canvas"></canvas>
+    </div>
+    <div class="card" id="status-card">
+      <h2>Status</h2>
+      <div id="status-badges"></div>
+    </div>
+  </div>
+  <script src="/assets/app.js"></script>
+  <script>
+    if (!getToken()) redirectToLogin();
+
+    const trackName = document.getElementById('track-name');
+    const trackMeta = document.getElementById('track-meta');
+    const posLabel = document.getElementById('pos-label');
+    const durLabel = document.getElementById('dur-label');
+    const progressFill = document.getElementById('progress-fill');
+    const levelCanvas = document.getElementById('level-canvas');
+    const statusBadges = document.getElementById('status-badges');
+
+    function fmtTime(secs) {
+      if (secs == null) return '0:00';
+      const m = Math.floor(secs / 60);
+      const s = Math.floor(secs % 60).toString().padStart(2, '0');
+      return m + ':' + s;
+    }
+
+    function dbToNorm(db) { return Math.max(0, (db + 60) / 60); }
+
+    onSseEvent('levels', (e) => {
+      renderLevels(levelCanvas, e.input.map(dbToNorm));
+    });
+
+    onSseEvent('playback_position', (e) => {
+      posLabel.textContent = fmtTime(e.position_secs);
+      if (e.duration_secs) {
+        const pct = Math.min(100, (e.position_secs / e.duration_secs) * 100);
+        progressFill.style.width = pct + '%';
+      }
+    });
+
+    onSseEvent('track_changed', (e) => {
+      trackName.textContent = e.name || '—';
+      durLabel.textContent = fmtTime(e.duration_secs);
+    });
+
+    onSseEvent('device_status', (e) => {
+      const badges = [];
+      if (e.playing) badges.push('<span class="badge badge-green">Playing</span>');
+      if (e.recording) badges.push('<span class="badge badge-red">Recording</span>');
+      if (e.monitoring) badges.push('<span class="badge badge-orange">Monitoring</span>');
+      statusBadges.innerHTML = badges.join(' ') || '<span class="badge" style="background:#222;color:#888">Idle</span>';
+      if (e.current_track) trackName.textContent = e.current_track;
+    });
+
+    apiFetch('GET', '/api/status').then(r => r && r.json()).then(s => {
+      if (!s) return;
+      trackName.textContent = s.current_track || '—';
+      durLabel.textContent = fmtTime(s.duration_secs);
+      posLabel.textContent = fmtTime(s.position_secs);
+    });
+
+    document.getElementById('btn-play').addEventListener('click', () => apiFetch('POST', '/api/transport/play'));
+    document.getElementById('btn-stop').addEventListener('click', () => apiFetch('POST', '/api/transport/stop'));
+    document.getElementById('btn-prev').addEventListener('click', () => apiFetch('POST', '/api/transport/prev'));
+    document.getElementById('btn-next').addEventListener('click', () => apiFetch('POST', '/api/transport/next'));
+
+    document.getElementById('logout-btn').addEventListener('click', async (e) => {
+      e.preventDefault();
+      await apiFetch('POST', '/auth/logout');
+      clearToken();
+      window.location.href = '/';
+    });
+
+    connectSse();
+  </script>
+</body>
+</html>

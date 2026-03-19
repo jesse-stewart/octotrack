@@ -4,6 +4,46 @@ Octotrack stores its configuration in `~/.config/octotrack/config.toml`. The fil
 
 If a legacy `config.json` is found on first run, it is automatically migrated to `config.toml` and renamed to `config.json.bak`.
 
+## First-run setup
+
+The web UI and WiFi access point are independent optional features:
+
+- **Web UI** — serves a browser interface on the local network (LAN). If the access point is also enabled, it is reachable there too.
+- **WiFi access point** — creates a dedicated `octotrack` hotspot, useful when no LAN is available (e.g. on stage). The web UI is accessible over the AP at the same address.
+
+Setup runs **once** — when `config.toml` does not yet exist. Each feature is opt-in; answering `n` disables it and skips the password step.
+
+```
+octotrack — first run setup
+
+  Enable web interface? [Y/n]:
+  Web UI password
+  Enter password:
+  Confirm:
+
+  Enable WiFi access point? [Y/n]:
+  Access point password (min 8 characters)
+  Enter password:
+  Confirm:
+
+  Setup complete. Starting octotrack...
+  AP network : octotrack
+  Web UI     : http://octotrack.local:8080
+```
+
+Once `config.toml` exists, the setup prompt never runs again automatically. Use `--set-password` to change passwords or re-enable a feature, and `--reset` to wipe passwords if you need to start over.
+
+The Web UI password is hashed with Argon2id and stored as a PHC string in `web.password_hash`. The AP password is stored plaintext in `network.ap.password` (consistent with wpa_supplicant/nmcli behaviour).
+
+If octotrack is started without a TTY (e.g. via systemd) before setup has been completed, it exits with an error instructing you to run `octotrack --set-password` interactively first.
+
+### CLI flags
+
+| Flag | Description |
+|------|-------------|
+| `--set-password` | Run the interactive setup prompt and exit. Use this to change passwords or re-enable a feature at any time. |
+| `--reset` | Clear both password fields and exit. Run `--set-password` afterwards to reconfigure. |
+
 ## Example config
 
 ```toml
@@ -29,9 +69,44 @@ split_file_mb = 0
 max_file_mb = 0
 max_file_mode = "stop"
 min_free_mb = 1024
+filename_template = "REC_{timestamp}"
 
 [monitoring]
 output_device = "hw:0,0"
+peak_hold_ms = 1500
+meter_decay_db_per_sec = 20.0
+
+[storage]
+tracks_dir = ""
+usb_mount_paths = ["/media", "/mnt"]
+recordings_subdir = ""
+
+[web]
+enabled = true
+port = 8080
+password_hash = ""   # set via first-run prompt or --set-password
+session_timeout_hours = 8
+hostname = "octotrack"
+
+[network.ap]
+enabled = true
+ssid = "octotrack"
+password = ""        # set via first-run prompt or --set-password
+channel = 6
+country_code = "US"
+address = "192.168.42.1"
+dhcp_range_start = "192.168.42.2"
+dhcp_range_end = "192.168.42.20"
+
+[logging]
+level = "info"
+log_file = ""
+max_size_mb = 10
+
+[tools]
+mplayer = "mplayer"
+ffmpeg = "ffmpeg"
+nmcli = "nmcli"
 ```
 
 ## `[playback]`
@@ -65,12 +140,62 @@ output_device = "hw:0,0"
 | `max_file_mode` | `"stop"` | What happens when the size limit is hit (or when rolling a split file): `"stop"` keeps all files and stops recording; `"drop"` deletes the previous file on each split roll (dashcam) or overwrites the oldest audio in-place (circular buffer, no splitting). |
 | `min_free_mb` | `1024` | Stop recording (or lock the circular-buffer size) when free disk space drops below this many MB. |
 | `split_file_mb` | `0` | Split recording into multiple files of this size in MB. `0` = no splitting. See [Recording modes](../README.md#recording-modes) for the full behaviour matrix. |
+| `filename_template` | `"REC_{timestamp}"` | Template for recording filenames. Supported tokens: `{timestamp}`, `{date}`, `{track}`. |
 
 ## `[monitoring]`
 
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `output_device` | `"hw:0,0"` | ALSA device for monitoring output. |
+| `peak_hold_ms` | `1500` | How long in milliseconds to hold peak level indicators before they decay. |
+| `meter_decay_db_per_sec` | `20.0` | Rate at which level meters decay in dB per second. |
+
+## `[storage]`
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `tracks_dir` | `""` | Explicit path to the tracks directory. `""` = auto-detect USB then `./tracks`. |
+| `usb_mount_paths` | `["/media", "/mnt"]` | Paths to scan for USB drives containing a `tracks/` folder. |
+| `recordings_subdir` | `""` | Subdirectory under `tracks_dir` to save recordings. `""` = same directory as tracks. |
+
+## `[web]`
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `enabled` | `true` | Enable the web interface. When enabled, the UI is served on the LAN and on the access point (if enabled). |
+| `port` | `8080` | TCP port the web server listens on. |
+| `password_hash` | `""` | Argon2id PHC string. Set automatically by the first-run prompt or `--set-password`. Do not edit by hand. |
+| `session_timeout_hours` | `8` | How long a web session stays valid without activity. |
+| `hostname` | `"octotrack"` | mDNS hostname used in the setup completion message (`http://<hostname>.local:<port>`). |
+
+## `[network.ap]`
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `enabled` | `true` | Enable the WiFi access point. When `false`, no hotspot is created and the AP setup step is skipped. The web UI remains available on the LAN regardless of this setting. |
+| `ssid` | `"octotrack"` | Access point network name. |
+| `password` | `""` | WPA2 passphrase (minimum 8 characters). Set automatically by the first-run prompt or `--set-password`. Stored plaintext, consistent with wpa_supplicant/nmcli. |
+| `channel` | `6` | WiFi channel (1–13 for 2.4 GHz). |
+| `country_code` | `"US"` | ISO 3166-1 alpha-2 country code for regulatory compliance. |
+| `address` | `"192.168.42.1"` | IP address assigned to the AP interface. |
+| `dhcp_range_start` | `"192.168.42.2"` | Start of DHCP address pool. |
+| `dhcp_range_end` | `"192.168.42.20"` | End of DHCP address pool. |
+
+## `[logging]`
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `level` | `"info"` | Log verbosity: `"error"`, `"warn"`, `"info"`, `"debug"`. |
+| `log_file` | `""` | Path to log file. `""` = `/tmp/octotrack.log`. |
+| `max_size_mb` | `10` | Maximum log file size in MB before rotation. |
+
+## `[tools]`
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `mplayer` | `"mplayer"` | Path or command name for mplayer. Override if installed to a non-standard location. |
+| `ffmpeg` | `"ffmpeg"` | Path or command name for ffmpeg. |
+| `nmcli` | `"nmcli"` | Path or command name for nmcli (used for network management). |
 
 ## Listing audio devices
 

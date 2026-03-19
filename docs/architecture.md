@@ -28,7 +28,18 @@ graph TD
 
 ```mermaid
 flowchart TD
-    start([Start]) --> init["Init terminal\nLoad config\nDiscover tracks"]
+    start([Start]) --> flags{"CLI flag?"}
+    flags -->|"--reset"| reset["Clear passwords\nSave config"]
+    flags -->|"--set-password"| setup_forced["Interactive\npassword setup"]
+    reset --> exit_early([Exit])
+    setup_forced --> exit_early
+
+    flags -->|"normal start"| load_cfg["Load config"]
+    load_cfg --> first_run{"needs_setup?\n(feature enabled + pw empty)"}
+    first_run -->|"yes + no TTY"| err([Exit with error\n'run --set-password first'])
+    first_run -->|"yes + TTY"| setup["Interactive setup\n(opt-in per feature)"]
+    setup --> init
+    first_run -->|"no"| init["Discover tracks\nStart scheduler"]
     init --> loop_top["Loop iteration"]
     loop_top --> update["1. Update playback info\n(position, levels, rec elapsed)"]
     update --> render["2. Render TUI\n(ratatui → terminal)"]
@@ -95,7 +106,7 @@ stateDiagram-v2
     note right of Playing
         mplayer slave process
         FIFO for runtime control
-        LoopMode: NoLoop / Single / All
+        LoopMode: NoLoop / LoopSingle / LoopAll
     end note
 ```
 
@@ -131,16 +142,17 @@ graph TD
 ```mermaid
 classDiagram
     class App {
-        +track_list: Vec~String~
+        +track_list: Vec~PathBuf~
         +current_track_index: usize
         +is_playing: bool
         +is_recording: bool
         +is_monitoring: bool
         +loop_mode: LoopMode
         +auto_mode: AutoMode
-        +eq_bands: Vec~i32~
+        +eq_bands: [i8; 10]
         +volume: u8
-        +player: AudioPlayer
+        +audio_player: AudioPlayer
+        +config: Config
         +play()
         +stop()
         +start_recording()
@@ -184,6 +196,7 @@ classDiagram
     }
 
     App --> AudioPlayer
+    App --> Config
     App --> ScheduleEntry
     AudioPlayer --> RecordingConfig
     ScheduleEntry --> CronExpr

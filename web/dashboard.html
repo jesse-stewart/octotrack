@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dashboard</title>
+  <link rel="stylesheet" href="/assets/style.css">
+  <style>
+    /* Two-column lower section */
+    .dash-grid { display:grid; grid-template-columns:1fr 1fr; gap:1rem; }
+    @media (max-width:700px) { .dash-grid { grid-template-columns:1fr; } }
+
+    /* Transport card */
+    .transport-file { font-size:1rem; font-weight:500; margin-bottom:0.4rem;
+                      overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .playback-progress { background:#222; border-radius:4px; height:6px; overflow:hidden; margin-bottom:0.25rem; }
+    .playback-progress-fill { height:100%; border-radius:4px; background:var(--accent); transition:width 0.25s; }
+    .transport-time { display:flex; justify-content:space-between; font-size:0.78rem;
+                      color:var(--text-muted); margin-bottom:0.5rem; }
+    .rec-stats { font-size:0.8rem; color:var(--text-muted); margin-bottom:0.5rem;
+                 display:none; padding:0.3rem 0.5rem; background:#1a1a1a; border-radius:4px; }
+    .rec-stats.visible { display:block; }
+
+    .unified-transport { display:flex; align-items:center; gap:0.4rem; flex-wrap:wrap; margin-bottom:0.75rem; }
+    .transport-divider { width:1px; height:28px; background:var(--border); margin:0 0.2rem; flex-shrink:0; }
+    .btn-rec { background:#c62828; color:#fff; border-color:#c62828; }
+    .btn-rec:hover { background:#e53935; }
+    .btn-rec:disabled { background:#444; border-color:#444; color:#888; cursor:not-allowed; }
+    /* Pulsing rec dot */
+    .rec-dot { display:inline-block; width:8px; height:8px; border-radius:50%;
+               background:#f44336; margin-right:4px; vertical-align:middle; }
+    .recording-active .rec-dot { animation:pulse 1s ease-in-out infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.2} }
+
+    /* Level canvas */
+    .level-wrap { margin-top:0.25rem; }
+
+    /* System info grid */
+    .info-grid { display:grid; grid-template-columns:1fr 1fr; gap:0.5rem 1.2rem; margin-bottom:0.75rem; }
+    .info-row { display:flex; flex-direction:column; gap:0.1rem; }
+    .info-label { font-size:0.7rem; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.04em; }
+    .info-value { font-size:0.9rem; font-weight:500; }
+    .usage-bar-wrap { margin-top:0.4rem; }
+    .usage-bar-track { background:#222; border-radius:4px; height:7px; overflow:hidden; margin-top:0.25rem; }
+    .usage-bar-fill { height:100%; border-radius:4px; transition:width 0.4s; }
+    .usage-bar-label { font-size:0.73rem; color:var(--text-muted); margin-top:0.2rem; }
+
+    /* Recent files */
+    .recent-file { display:flex; justify-content:space-between; align-items:center;
+                   padding:0.4rem 0; border-bottom:1px solid #1e1e1e; gap:0.5rem; }
+    .recent-file:last-child { border-bottom:none; }
+    .recent-fname { font-size:0.83rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; flex:1;
+                    color:var(--text); text-decoration:none; }
+    .recent-fname:hover { color:var(--accent); }
+    .recent-meta { font-size:0.73rem; color:var(--text-muted); white-space:nowrap; }
+
+    /* Controls */
+    .sys-actions { display:flex; gap:0.5rem; flex-wrap:wrap; }
+  </style>
+</head>
+<body>
+  <nav>
+    <a href="/dashboard" class="active">Dashboard</a>
+    <a href="/playback">Playback</a>
+    <a href="/files">Files</a>
+    <a href="/recording">Recording</a>
+    <a href="/settings">Settings</a>
+    <span style="flex:1"></span>
+    <a href="#" id="logout-btn">Logout</a>
+  </nav>
+  <div class="container">
+
+    <!-- Unified Transport / Media / Recorder card -->
+    <div class="card" id="media-card">
+      <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.6rem" id="status-row">
+        <span class="badge" id="badge-idle" style="background:#222;color:#888">Idle</span>
+        <span class="badge badge-green" id="badge-playing" style="display:none">Playing</span>
+        <span class="badge badge-red" id="badge-recording" style="display:none">
+          <span class="rec-dot" id="rec-dot"></span>Recording
+        </span>
+        <span class="badge badge-orange" id="badge-monitoring" style="display:none">Monitoring</span>
+      </div>
+
+      <div class="transport-file" id="transport-file">—</div>
+
+      <!-- Playback progress (hidden when only recording) -->
+      <div id="playback-section">
+        <div class="playback-progress">
+          <div class="playback-progress-fill" id="progress-fill" style="width:0%"></div>
+        </div>
+        <div class="transport-time">
+          <span id="pos-label">0:00</span>
+          <span id="dur-label">0:00</span>
+        </div>
+      </div>
+
+      <!-- Recording stats (shown when recording) -->
+      <div class="rec-stats" id="rec-stats">
+        <span id="rec-path-short"></span>
+        &nbsp;·&nbsp;<span id="rec-size">—</span>
+        &nbsp;·&nbsp;<span id="rec-dur">0:00</span>
+      </div>
+
+      <!-- Unified transport buttons: Prev · Next · Stop · Play · Record -->
+      <div class="unified-transport">
+        <button id="btn-prev" title="Previous">&#9664;&#9664;</button>
+        <button id="btn-next" title="Next">&#9654;&#9654;</button>
+        <button id="btn-stop" title="Stop playback and recording">&#9632; Stop</button>
+        <button id="btn-play" class="primary" title="Play">&#9654; Play</button>
+        <button id="btn-start-rec" class="btn-rec" title="Start Recording">&#9679; Record</button>
+      </div>
+
+      <!-- Level meter -->
+      <div class="level-wrap">
+        <div class="info-label" style="margin-bottom:0.3rem">Input Levels</div>
+        <canvas class="meter" id="level-canvas" style="height:56px"></canvas>
+      </div>
+    </div>
+
+    <!-- Two-column: System + Recent -->
+    <div class="dash-grid">
+
+      <!-- System Info -->
+      <div class="card">
+        <h2>System</h2>
+        <div class="info-grid">
+          <div class="info-row">
+            <span class="info-label">Hostname</span>
+            <span class="info-value" id="sys-hostname">—</span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Uptime</span>
+            <span class="info-value" id="sys-uptime">—</span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Load</span>
+            <span class="info-value" id="sys-load">—</span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">IP</span>
+            <span class="info-value" id="sys-ip">—</span>
+          </div>
+        </div>
+        <div class="usage-bar-wrap">
+          <div class="info-label">Memory</div>
+          <div class="usage-bar-track">
+            <div class="usage-bar-fill" id="mem-bar" style="width:0%;background:#2196f3"></div>
+          </div>
+          <div class="usage-bar-label" id="mem-label">—</div>
+        </div>
+        <div class="usage-bar-wrap">
+          <div class="info-label" style="margin-top:0.5rem">Disk</div>
+          <div class="usage-bar-track">
+            <div class="usage-bar-fill" id="disk-bar" style="width:0%;background:#4caf50"></div>
+          </div>
+          <div class="usage-bar-label" id="disk-label">—</div>
+        </div>
+        <div style="margin-top:1rem;display:flex;gap:0.4rem;flex-wrap:wrap">
+          <button id="btn-restart" style="font-size:0.82rem;padding:0.3rem 0.7rem">Restart App</button>
+          <button id="btn-reboot" class="danger" style="font-size:0.82rem;padding:0.3rem 0.7rem">Reboot</button>
+          <button id="btn-shutdown" class="danger" style="font-size:0.82rem;padding:0.3rem 0.7rem">Shutdown</button>
+        </div>
+        <div id="sys-action-msg" style="margin-top:0.4rem;font-size:0.78rem;color:var(--text-muted)"></div>
+      </div>
+
+      <!-- Recent Recordings -->
+      <div class="card">
+        <h2>Recent Recordings</h2>
+        <div id="recent-files"><span style="color:var(--text-muted);font-size:0.85rem">Loading…</span></div>
+        <div style="margin-top:0.75rem">
+          <a href="/files" style="font-size:0.85rem;color:var(--accent)">View all files →</a>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <script src="/assets/app.js"></script>
+  <script>
+    if (!getToken()) redirectToLogin();
+
+    // ── helpers ─────────────────────────────────────────────────────────────
+
+    function fmtTime(secs) {
+      if (!secs && secs !== 0) return '—';
+      const h = Math.floor(secs / 3600);
+      const m = Math.floor((secs % 3600) / 60);
+      const s = Math.floor(secs % 60).toString().padStart(2, '0');
+      return h > 0 ? h + ':' + String(m).padStart(2,'0') + ':' + s : m + ':' + s;
+    }
+
+    function fmtUptime(secs) {
+      const d = Math.floor(secs / 86400);
+      const h = Math.floor((secs % 86400) / 3600);
+      const m = Math.floor((secs % 3600) / 60);
+      if (d > 0) return d + 'd ' + h + 'h ' + m + 'm';
+      if (h > 0) return h + 'h ' + m + 'm';
+      return m + 'm';
+    }
+
+    function fmtBytes(b) {
+      if (b >= 1e9) return (b / 1e9).toFixed(1) + ' GB';
+      if (b >= 1e6) return (b / 1e6).toFixed(1) + ' MB';
+      return (b / 1e3).toFixed(0) + ' KB';
+    }
+
+    function dbToNorm(db) { return Math.max(0, (db + 60) / 60); }
+
+    // ── DOM refs ─────────────────────────────────────────────────────────────
+
+    const badgeIdle       = document.getElementById('badge-idle');
+    const badgePlaying    = document.getElementById('badge-playing');
+    const badgeRecording  = document.getElementById('badge-recording');
+    const badgeMonitoring = document.getElementById('badge-monitoring');
+    const transportFile   = document.getElementById('transport-file');
+    const progressFill    = document.getElementById('progress-fill');
+    const posLabel        = document.getElementById('pos-label');
+    const durLabel        = document.getElementById('dur-label');
+    const recStats        = document.getElementById('rec-stats');
+    const recPathShort    = document.getElementById('rec-path-short');
+    const recSize         = document.getElementById('rec-size');
+    const recDur          = document.getElementById('rec-dur');
+    const levelCanvas     = document.getElementById('level-canvas');
+    const btnPlay         = document.getElementById('btn-play');
+    const btnStartRec     = document.getElementById('btn-start-rec');
+
+    // ── state ────────────────────────────────────────────────────────────────
+
+    let isPlaying = false;
+    let isRecording = false;
+
+    function setStatus(playing, recording, monitoring) {
+      isPlaying   = playing;
+      isRecording = recording;
+      const idle  = !playing && !recording && !monitoring;
+      badgeIdle.style.display       = idle       ? '' : 'none';
+      badgePlaying.style.display    = playing    ? '' : 'none';
+      badgeRecording.style.display  = recording  ? '' : 'none';
+      badgeMonitoring.style.display = monitoring ? '' : 'none';
+
+      btnStartRec.disabled = recording;
+      recStats.classList.toggle('visible', recording);
+    }
+
+    // ── SSE events ───────────────────────────────────────────────────────────
+
+    onSseEvent('device_status', (e) => {
+      setStatus(e.playing, e.recording, e.monitoring);
+      if (e.current_track && !isRecording) {
+        transportFile.textContent = e.current_track;
+      }
+    });
+
+    onSseEvent('track_changed', (e) => {
+      transportFile.textContent = e.name || '—';
+      durLabel.textContent = fmtTime(e.duration_secs);
+    });
+
+    onSseEvent('playback_position', (e) => {
+      posLabel.textContent = fmtTime(e.position_secs);
+      if (e.duration_secs && e.duration_secs > 0) {
+        progressFill.style.width = Math.min(100, e.position_secs / e.duration_secs * 100) + '%';
+      }
+    });
+
+    onSseEvent('recording_progress', (e) => {
+      if (e.path) {
+        const short = e.path.split('/').pop();
+        recPathShort.textContent = short;
+        if (isRecording) transportFile.textContent = short;
+      }
+      recSize.textContent = fmtBytes(e.size_bytes || 0);
+      recDur.textContent  = fmtTime(e.duration_secs || 0);
+      // Refresh recent files when a recording is in progress
+      loadRecentFiles();
+    });
+
+    onSseEvent('levels', (e) => {
+      renderLevels(levelCanvas, e.input.map(dbToNorm));
+    });
+
+    // ── initial status load ──────────────────────────────────────────────────
+
+    apiFetch('GET', '/api/status').then(r => r && r.json()).then(s => {
+      if (!s) return;
+      setStatus(s.playing, s.recording, s.monitoring);
+      transportFile.textContent = s.current_track || '—';
+      durLabel.textContent = fmtTime(s.duration_secs);
+      posLabel.textContent = fmtTime(s.position_secs);
+      if (s.recording && s.recording_path) {
+        const short = s.recording_path.split('/').pop();
+        recPathShort.textContent = short;
+        recSize.textContent = fmtBytes(s.recording_size_bytes || 0);
+        recDur.textContent = fmtTime(s.recording_duration_secs || 0);
+        transportFile.textContent = short;
+      }
+    });
+
+    // ── transport buttons ────────────────────────────────────────────────────
+
+    btnPlay.addEventListener('click', () =>
+      apiFetch('POST', '/api/transport/play'));
+    document.getElementById('btn-stop').addEventListener('click', () => {
+      apiFetch('POST', '/api/transport/stop');
+      if (isRecording) apiFetch('POST', '/api/recording/stop');
+    });
+    document.getElementById('btn-prev').addEventListener('click', () =>
+      apiFetch('POST', '/api/transport/prev'));
+    document.getElementById('btn-next').addEventListener('click', () =>
+      apiFetch('POST', '/api/transport/next'));
+    btnStartRec.addEventListener('click', () =>
+      apiFetch('POST', '/api/recording/start'));
+
+    // ── system info ──────────────────────────────────────────────────────────
+
+    function loadSysInfo() {
+      apiFetch('GET', '/api/system/info').then(r => r && r.json()).then(info => {
+        if (!info) return;
+        document.getElementById('sys-hostname').textContent = info.hostname || '—';
+        document.getElementById('sys-uptime').textContent   = fmtUptime(info.uptime_secs);
+        document.getElementById('sys-load').textContent     = info.load_avg || '—';
+        document.getElementById('sys-ip').textContent       = window.location.hostname;
+
+        const memUsed = info.mem_total_mb - info.mem_available_mb;
+        const memPct  = info.mem_total_mb > 0 ? Math.round(memUsed / info.mem_total_mb * 100) : 0;
+        const memBar  = document.getElementById('mem-bar');
+        memBar.style.width      = memPct + '%';
+        memBar.style.background = memPct > 85 ? '#f44336' : memPct > 65 ? '#ff9800' : '#2196f3';
+        document.getElementById('mem-label').textContent =
+          fmtBytes(memUsed * 1048576) + ' / ' + fmtBytes(info.mem_total_mb * 1048576) + ' (' + memPct + '%)';
+
+        const diskPct = info.disk_total_bytes > 0
+          ? Math.round(info.disk_used_bytes / info.disk_total_bytes * 100) : 0;
+        const diskBar = document.getElementById('disk-bar');
+        diskBar.style.width      = diskPct + '%';
+        diskBar.style.background = diskPct > 90 ? '#f44336' : diskPct > 75 ? '#ff9800' : '#4caf50';
+        document.getElementById('disk-label').textContent =
+          fmtBytes(info.disk_used_bytes) + ' / ' + fmtBytes(info.disk_total_bytes) + ' (' + diskPct + '%)';
+      });
+    }
+
+    // ── recent recordings ────────────────────────────────────────────────────
+
+    let _recentDebounce = null;
+    function loadRecentFiles() {
+      clearTimeout(_recentDebounce);
+      _recentDebounce = setTimeout(() => {
+        apiFetch('GET', '/api/files?page=1&per_page=6').then(r => r && r.json()).then(data => {
+          const el = document.getElementById('recent-files');
+          if (!data || !data.items || data.items.length === 0) {
+            el.innerHTML = '<span style="color:var(--text-muted);font-size:0.85rem">No recordings yet.</span>';
+            return;
+          }
+          el.innerHTML = data.items.map(f => `
+            <div class="recent-file">
+              <a class="recent-fname" href="/file?name=${encodeURIComponent(f.name)}" title="${f.name}">${f.name}</a>
+              <span class="recent-meta">${fmtBytes(f.size_bytes)}${f.duration_secs ? ' · ' + fmtTime(f.duration_secs) : ''}${f.channels ? ' · ' + f.channels + 'ch' : ''}</span>
+            </div>`).join('');
+        });
+      }, 400);
+    }
+
+    // ── system controls ──────────────────────────────────────────────────────
+
+    const sysMsg = document.getElementById('sys-action-msg');
+    function sysAction(endpoint, label) {
+      if (!confirm(label + ' — are you sure?')) return;
+      apiFetch('POST', endpoint).then(() => { sysMsg.textContent = label + '…'; });
+    }
+    document.getElementById('btn-restart').addEventListener('click',  () => sysAction('/api/system/restart',  'Restarting app'));
+    document.getElementById('btn-reboot').addEventListener('click',   () => sysAction('/api/system/reboot',   'Rebooting'));
+    document.getElementById('btn-shutdown').addEventListener('click', () => sysAction('/api/system/shutdown', 'Shutting down'));
+
+    // ── logout ───────────────────────────────────────────────────────────────
+
+    document.getElementById('logout-btn').addEventListener('click', async (e) => {
+      e.preventDefault();
+      await apiFetch('POST', '/auth/logout');
+      clearToken();
+      window.location.href = '/';
+    });
+
+    // ── init ─────────────────────────────────────────────────────────────────
+
+    loadSysInfo();
+    loadRecentFiles();
+    setInterval(loadSysInfo, 10000);
+    connectSse();
+  </script>
+</body>
+</html>

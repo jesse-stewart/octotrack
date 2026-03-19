@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Files</title>
+  <link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+  <nav>
+    <a href="/dashboard">Dashboard</a>
+    <a href="/playback">Playback</a>
+    <a href="/files" class="active">Files</a>
+    <a href="/recording">Recording</a>
+    <a href="/settings">Settings</a>
+    <span style="flex:1"></span>
+    <a href="#" id="logout-btn">Logout</a>
+  </nav>
+  <div class="container">
+    <div class="card">
+      <h2>Tracks</h2>
+      <div style="display:flex;gap:0.75rem;align-items:center;margin-bottom:1rem;flex-wrap:wrap">
+        <button id="precompute-btn" onclick="triggerPrecompute()">Generate Waveforms</button>
+        <span id="peaks-progress" style="color:var(--text-muted);font-size:0.85rem"></span>
+      </div>
+      <table id="files-table">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Date</th>
+            <th>Size</th>
+            <th>Ch</th>
+            <th>Duration</th>
+            <th>Waveform</th>
+            <th></th>
+            <th>Preview</th>
+          </tr>
+        </thead>
+        <tbody id="files-body">
+          <tr><td colspan="4" style="color:var(--text-muted);text-align:center;padding:2rem">Loading...</td></tr>
+        </tbody>
+      </table>
+      <div id="pagination" style="display:flex;gap:0.5rem;align-items:center;margin-top:1rem;justify-content:flex-end"></div>
+    </div>
+  </div>
+  <script src="/assets/app.js"></script>
+  <script>
+    if (!getToken()) redirectToLogin();
+
+    const PER_PAGE = 20;
+    let currentPage = parseInt(new URLSearchParams(location.search).get('page')) || 1;
+    let totalPages = 1;
+
+    function setPage(page) {
+      const url = new URL(location.href);
+      url.searchParams.set('page', page);
+      history.pushState(null, '', url);
+    }
+
+    window.addEventListener('popstate', () => {
+      const page = parseInt(new URLSearchParams(location.search).get('page')) || 1;
+      loadFiles(page);
+    });
+
+    // IntersectionObserver: only fetch peaks when canvas scrolls into view
+    const peakObserver = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.isIntersecting) {
+          peakObserver.unobserve(entry.target);
+          const canvas = entry.target;
+          loadWaveform(canvas, canvas.dataset.path);
+        }
+      }
+    }, { rootMargin: '100px' });
+
+    function fmtDuration(secs) {
+      const h = Math.floor(secs / 3600);
+      const m = Math.floor((secs % 3600) / 60);
+      const s = Math.floor(secs % 60);
+      if (h > 0) return `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+      return `${m}:${String(s).padStart(2,'0')}`;
+    }
+
+    function fmtSize(bytes) {
+      if (bytes < 1024) return bytes + ' B';
+      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+      if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+      return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+    }
+
+    function escHtml(s) {
+      return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    async function loadFiles(page) {
+      setPage(page);
+      const resp = await apiFetch('GET', `/api/files?page=${page}&per_page=${PER_PAGE}`);
+      if (!resp) return;
+      const data = await resp.json();
+      currentPage = data.page;
+      totalPages = data.pages;
+
+      const tbody = document.getElementById('files-body');
+      if (!data.items || data.items.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="4" style="color:var(--text-muted);text-align:center;padding:2rem">No tracks found.</td></tr>';
+        renderPagination();
+        return;
+      }
+
+      tbody.innerHTML = '';
+      for (const f of data.items) {
+        const tr = document.createElement('tr');
+        const relPath = encodeURIComponent(f.name);
+        // Browser can't play WAV files over 4 GB or RF64 files
+        const playable = f.size_bytes < 4 * 1024 * 1024 * 1024 &&
+          /\.(mp3|ogg|flac|m4a|wav)$/i.test(f.name);
+        const audioEl = playable
+          ? `<audio controls preload="none" src="/api/files/${relPath}" style="height:32px;max-width:200px"></audio>`
+          : '';
+
+        const badCh = f.channels == null || f.channels === 0;
+        const badDur = f.duration_secs == null || f.duration_secs === 0;
+        const warnings = [];
+        if (badCh) warnings.push('channel count is 0 or unknown');
+        if (badDur) warnings.push('duration is 0 or unknown');
+        const alertIcon = warnings.length
+          ? ` <span title="Warning: ${warnings.join('; ')}" style="color:#ff9800;cursor:default">&#x26A0;</span>`
+          : '';
+        const chLabel = f.channels != null && f.channels > 0 ? f.channels : '—';
+        const durLabel = f.duration_secs != null && f.duration_secs > 0 ? fmtDuration(f.duration_secs) : '—';
+        const dateLabel = f.modified_secs != null
+          ? new Date(f.modified_secs * 1000).toLocaleString()
+          : '—';
+        tr.innerHTML = `
+          <td><a href="/file?name=${encodeURIComponent(f.name)}" style="color:var(--text)">${escHtml(f.name)}</a>${alertIcon}</td>
+          <td style="white-space:nowrap;color:var(--text-muted)">${dateLabel}</td>
+          <td style="white-space:nowrap;color:var(--text-muted)">${fmtSize(f.size_bytes)}</td>
+          <td style="color:var(--text-muted);text-align:center">${chLabel}</td>
+          <td style="white-space:nowrap;color:var(--text-muted)">${durLabel}</td>
+          <td style="min-width:120px"><canvas class="waveform-canvas" data-path="${escHtml(f.name)}" width="200" style="height:32px"></canvas></td>
+          <td style="white-space:nowrap;display:flex;gap:0.5rem;align-items:center">
+            <a href="/api/files/${relPath}" download="${escHtml(f.name)}" class="btn-link">&#x2B07; Download</a>
+            <button class="danger" data-del="${escHtml(f.name)}">&#x1F5D1;</button>
+          </td>
+          <td>${audioEl}</td>
+        `;
+        tbody.appendChild(tr);
+
+        const audio = tr.querySelector('audio');
+        if (audio) registerAudio(audio);
+
+        // Observe canvas — peaks load only when scrolled into view
+        peakObserver.observe(tr.querySelector('canvas'));
+      }
+
+      tbody.querySelectorAll('[data-del]').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const name = btn.dataset.del;
+          if (!confirm('Delete ' + name + '?')) return;
+          const r = await apiFetch('DELETE', '/api/files/' + encodeURIComponent(name));
+          if (r && r.ok) loadFiles(currentPage);
+        });
+      });
+
+      renderPagination();
+    }
+
+    function renderPagination() {
+      const el = document.getElementById('pagination');
+      el.innerHTML = '';
+      if (totalPages <= 1) return;
+
+      function btn(text, page, disabled) {
+        const b = document.createElement('button');
+        b.textContent = text;
+        b.disabled = disabled;
+        b.addEventListener('click', () => loadFiles(page));
+        el.appendChild(b);
+      }
+
+      btn('« First', 1, currentPage <= 1);
+      btn('← Prev', currentPage - 1, currentPage <= 1);
+
+      const label = document.createElement('span');
+      label.style.color = 'var(--text-muted)';
+      label.textContent = `Page ${currentPage} of ${totalPages}`;
+      el.appendChild(label);
+
+      btn('Next →', currentPage + 1, currentPage >= totalPages);
+      btn('Last »', totalPages, currentPage >= totalPages);
+    }
+
+    function showWaveformError(canvas) {
+      const span = document.createElement('span');
+      span.title = 'Waveform could not be generated';
+      span.style.cssText = 'color:#ff9800;cursor:default;font-size:1.1rem';
+      span.textContent = '⚠';
+      canvas.replaceWith(span);
+    }
+
+    async function loadWaveform(canvas, name, attempt) {
+      attempt = attempt || 0;
+      const resp = await apiFetch('GET', '/api/files/' + encodeURIComponent(name) + '/peaks');
+      if (!resp) return;
+      if (resp.status === 202) {
+        // Server is computing — retry with backoff (max ~30s total)
+        if (attempt < 15) {
+          setTimeout(() => loadWaveform(canvas, name, attempt + 1), 2000);
+        } else {
+          showWaveformError(canvas);
+        }
+        return;
+      }
+      if (!resp.ok) {
+        showWaveformError(canvas);
+        return;
+      }
+      const peaks = await resp.json();
+      renderWaveform(canvas, peaks);
+    }
+
+    let _peaksPollTimer = null;
+
+    async function updatePeaksProgress() {
+      const resp = await apiFetch('GET', '/api/peaks/status');
+      if (!resp || !resp.ok) return;
+      const data = await resp.json();
+      const el = document.getElementById('peaks-progress');
+      if (data.total === 0) {
+        el.textContent = '';
+        clearInterval(_peaksPollTimer);
+        _peaksPollTimer = null;
+        return;
+      }
+      el.textContent = `Waveforms: ${data.done} / ${data.total} done${data.failed > 0 ? `, ${data.failed} failed` : ''}${data.pending > 0 ? ` (${data.pending} pending)` : ''}`;
+      if (data.pending === 0) {
+        clearInterval(_peaksPollTimer);
+        _peaksPollTimer = null;
+      }
+    }
+
+    async function triggerPrecompute() {
+      const btn = document.getElementById('precompute-btn');
+      btn.disabled = true;
+      const resp = await apiFetch('POST', '/api/peaks/precompute');
+      btn.disabled = false;
+      if (!resp || !resp.ok) return;
+      if (_peaksPollTimer) clearInterval(_peaksPollTimer);
+      _peaksPollTimer = setInterval(updatePeaksProgress, 1500);
+      updatePeaksProgress();
+    }
+
+    // Poll progress on load in case precompute is already running
+    updatePeaksProgress();
+
+    document.getElementById('logout-btn').addEventListener('click', async (e) => {
+      e.preventDefault();
+      await apiFetch('POST', '/auth/logout');
+      clearToken();
+      window.location.href = '/';
+    });
+
+    loadFiles(currentPage);
+  </script>
+</body>
+</html>

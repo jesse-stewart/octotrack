@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Settings</title>
+  <link rel="stylesheet" href="/assets/style.css">
+  <style>
+    .eq-grid { display:flex; gap:0.5rem; align-items:flex-end; flex-wrap:wrap; }
+    .eq-band { display:flex; flex-direction:column; align-items:center; gap:0.25rem; min-width:48px; }
+    .eq-band label { font-size:0.7rem; color:var(--text-muted); white-space:nowrap; }
+    .eq-band input[type=range] { writing-mode:vertical-lr; direction:rtl; height:80px; width:28px; cursor:pointer; }
+    .eq-band span { font-size:0.75rem; color:var(--text-muted); min-width:30px; text-align:center; }
+    .section-note { font-size:0.8rem; color:var(--text-muted); margin-bottom:0.75rem; }
+  </style>
+</head>
+<body>
+  <nav>
+    <a href="/dashboard">Dashboard</a>
+    <a href="/playback">Playback</a>
+    <a href="/files">Files</a>
+    <a href="/recording">Recording</a>
+    <a href="/settings" class="active">Settings</a>
+    <span style="flex:1"></span>
+    <a href="#" id="logout-btn">Logout</a>
+  </nav>
+  <div class="container">
+
+    <!-- Playback -->
+    <div class="card">
+      <h2>Playback</h2>
+      <div class="row">
+        <div class="form-group">
+          <label>Playback Device</label>
+          <input type="text" id="playback-device" placeholder="e.g. hw:0,0">
+        </div>
+        <div class="form-group">
+          <label>Channel Count</label>
+          <input type="number" id="playback-channels" min="1" max="64">
+        </div>
+      </div>
+      <div class="row">
+        <div class="form-group">
+          <label>Volume (0–100)</label>
+          <input type="number" id="volume" min="0" max="100">
+        </div>
+        <div class="form-group">
+          <label>Max Volume (0–100)</label>
+          <input type="number" id="max-volume" min="0" max="100">
+        </div>
+      </div>
+      <div class="row">
+        <div class="form-group">
+          <label>Loop Mode</label>
+          <select id="loop-mode">
+            <option value="off">Off</option>
+            <option value="single">Single</option>
+            <option value="all">All</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Auto Mode</label>
+          <select id="auto-mode">
+            <option value="off">Off</option>
+            <option value="play">Play</option>
+            <option value="rec">Record</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-group" style="max-width:400px">
+        <label>Start Track (filename, optional)</label>
+        <input type="text" id="start-track" placeholder="e.g. intro.wav">
+      </div>
+    </div>
+
+    <!-- EQ -->
+    <div class="card">
+      <h2>EQ</h2>
+      <div class="form-group" style="margin-bottom:1rem">
+        <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">
+          <input type="checkbox" id="eq-enabled"> Enable EQ
+        </label>
+      </div>
+      <div class="eq-grid" id="eq-bands"></div>
+    </div>
+
+    <!-- Recording -->
+    <div class="card">
+      <h2>Recording</h2>
+      <div class="row">
+        <div class="form-group">
+          <label>Input Device</label>
+          <input type="text" id="rec-device" placeholder="e.g. hw:1,0">
+        </div>
+        <div class="form-group">
+          <label>Channel Count</label>
+          <input type="number" id="rec-channels" min="1" max="64">
+        </div>
+      </div>
+      <div class="row">
+        <div class="form-group">
+          <label>Sample Rate (Hz)</label>
+          <input type="number" id="rec-sample-rate">
+        </div>
+        <div class="form-group">
+          <label>Bit Depth</label>
+          <select id="rec-bit-depth">
+            <option value="16">16-bit</option>
+            <option value="24">24-bit</option>
+            <option value="32">32-bit</option>
+          </select>
+        </div>
+      </div>
+      <div class="row">
+        <div class="form-group">
+          <label>Split File At (MB, 0 = off)</label>
+          <input type="number" id="rec-split-mb" min="0">
+        </div>
+        <div class="form-group">
+          <label>Max File Size (MB, 0 = off)</label>
+          <input type="number" id="rec-max-mb" min="0">
+        </div>
+      </div>
+      <div class="row">
+        <div class="form-group">
+          <label>On Max File Size</label>
+          <select id="rec-max-mode">
+            <option value="stop">Stop recording</option>
+            <option value="split">Split to new file</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Min Free Space (MB)</label>
+          <input type="number" id="rec-min-free-mb" min="0">
+        </div>
+      </div>
+      <div class="form-group" style="max-width:500px">
+        <label>Filename Template</label>
+        <input type="text" id="rec-filename-template" placeholder="e.g. REC_{timestamp}">
+      </div>
+    </div>
+
+    <!-- Monitoring -->
+    <div class="card">
+      <h2>Monitoring</h2>
+      <div class="row">
+        <div class="form-group">
+          <label>Monitor Output Device</label>
+          <input type="text" id="mon-device" placeholder="e.g. hw:2,0">
+        </div>
+        <div class="form-group">
+          <label>Peak Hold (ms)</label>
+          <input type="number" id="mon-peak-hold" min="0">
+        </div>
+      </div>
+      <div class="row">
+        <div class="form-group">
+          <label>Meter Decay (dB/sec)</label>
+          <input type="number" id="mon-decay" min="0" step="0.1">
+        </div>
+        <div class="form-group"></div>
+      </div>
+    </div>
+
+    <!-- Storage -->
+    <div class="card">
+      <h2>Storage</h2>
+      <div class="row">
+        <div class="form-group">
+          <label>Tracks Directory</label>
+          <input type="text" id="storage-tracks-dir" placeholder="e.g. /media/usb/tracks">
+        </div>
+        <div class="form-group">
+          <label>Recordings Subdirectory</label>
+          <input type="text" id="storage-recordings-subdir">
+        </div>
+      </div>
+    </div>
+
+    <!-- Web -->
+    <div class="card">
+      <h2>Web Interface</h2>
+      <div class="form-group" style="margin-bottom:1rem">
+        <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">
+          <input type="checkbox" id="web-enabled"> Enable web interface
+        </label>
+      </div>
+      <div class="row">
+        <div class="form-group">
+          <label>Port</label>
+          <input type="number" id="web-port" min="1" max="65535">
+        </div>
+        <div class="form-group">
+          <label>Session Timeout (hours)</label>
+          <input type="number" id="web-timeout" min="1">
+        </div>
+      </div>
+      <div class="form-group" style="max-width:400px">
+        <label>Hostname</label>
+        <input type="text" id="web-hostname" placeholder="e.g. octotrack.local">
+      </div>
+    </div>
+
+    <!-- Access Point -->
+    <div class="card">
+      <h2>Access Point</h2>
+      <div class="form-group" style="margin-bottom:1rem">
+        <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">
+          <input type="checkbox" id="ap-enabled"> Enable access point (takes effect on next restart)
+        </label>
+      </div>
+      <div class="row">
+        <div class="form-group">
+          <label>SSID</label>
+          <input type="text" id="ap-ssid">
+        </div>
+        <div class="form-group">
+          <label>Channel</label>
+          <input type="number" id="ap-channel" min="1" max="14">
+        </div>
+      </div>
+      <div class="row">
+        <div class="form-group">
+          <label>Country Code</label>
+          <input type="text" id="ap-country" maxlength="2" placeholder="US">
+        </div>
+        <div class="form-group">
+          <label>AP IP Address</label>
+          <input type="text" id="ap-address" placeholder="192.168.42.1">
+        </div>
+      </div>
+      <div class="row">
+        <div class="form-group">
+          <label>DHCP Range Start</label>
+          <input type="text" id="ap-dhcp-start" placeholder="192.168.42.2">
+        </div>
+        <div class="form-group">
+          <label>DHCP Range End</label>
+          <input type="text" id="ap-dhcp-end" placeholder="192.168.42.20">
+        </div>
+      </div>
+    </div>
+
+    <!-- Tools -->
+    <div class="card">
+      <h2>Tools</h2>
+      <p class="section-note">Paths to external binaries. Change only if they are installed in non-standard locations.</p>
+      <div class="row">
+        <div class="form-group">
+          <label>mplayer</label>
+          <input type="text" id="tool-mplayer">
+        </div>
+        <div class="form-group">
+          <label>ffmpeg</label>
+          <input type="text" id="tool-ffmpeg">
+        </div>
+      </div>
+      <div class="row">
+        <div class="form-group">
+          <label>nmcli</label>
+          <input type="text" id="tool-nmcli">
+        </div>
+        <div class="form-group"></div>
+      </div>
+    </div>
+
+    <!-- Logging -->
+    <div class="card">
+      <h2>Logging</h2>
+      <div class="row">
+        <div class="form-group">
+          <label>Log Level</label>
+          <select id="log-level">
+            <option value="error">Error</option>
+            <option value="warn">Warn</option>
+            <option value="info">Info</option>
+            <option value="debug">Debug</option>
+            <option value="trace">Trace</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Max Log Size (MB)</label>
+          <input type="number" id="log-max-mb" min="1">
+        </div>
+      </div>
+      <div class="form-group" style="max-width:500px">
+        <label>Log File Path</label>
+        <input type="text" id="log-file">
+      </div>
+    </div>
+
+    <!-- Change Password -->
+    <div class="card">
+      <h2>Change Password</h2>
+      <div class="form-group" style="max-width:320px">
+        <label>New Password</label>
+        <input type="password" id="new-password" autocomplete="new-password">
+      </div>
+      <div class="form-group" style="max-width:320px">
+        <label>Confirm Password</label>
+        <input type="password" id="confirm-password" autocomplete="new-password">
+      </div>
+      <button id="btn-change-password">Change Password</button>
+      <span id="pw-msg" style="margin-left:1rem;font-size:0.85rem"></span>
+    </div>
+
+    <div style="display:flex;gap:1rem;margin-top:1rem;align-items:center;flex-wrap:wrap">
+      <button class="primary" id="btn-save">Save Settings</button>
+      <span id="save-msg" style="font-size:0.85rem"></span>
+      <span style="flex:1"></span>
+      <button class="danger" id="btn-restart">Restart App</button>
+      <button class="danger" id="btn-reboot">Reboot</button>
+      <button class="danger" id="btn-shutdown">Shutdown</button>
+    </div>
+  </div>
+
+  <script src="/assets/app.js"></script>
+  <script>
+    if (!getToken()) redirectToLogin();
+
+    // Build EQ band sliders
+    const EQ_LABELS = ['32','64','125','250','500','1k','2k','4k','8k','16k'];
+    const eqGrid = document.getElementById('eq-bands');
+    EQ_LABELS.forEach((label, i) => {
+      const div = document.createElement('div');
+      div.className = 'eq-band';
+      div.innerHTML = `
+        <span id="eq-val-${i}">0</span>
+        <input type="range" id="eq-band-${i}" min="-12" max="12" step="1" value="0">
+        <label>${label} Hz</label>
+      `;
+      eqGrid.appendChild(div);
+      div.querySelector('input').addEventListener('input', (e) => {
+        document.getElementById(`eq-val-${i}`).textContent = e.target.value;
+      });
+    });
+
+    async function loadConfig() {
+      const resp = await apiFetch('GET', '/api/config');
+      if (!resp || !resp.ok) return;
+      const cfg = await resp.json();
+
+      // Playback
+      document.getElementById('playback-device').value = cfg.playback?.device || '';
+      document.getElementById('playback-channels').value = cfg.playback?.channel_count ?? 2;
+      document.getElementById('volume').value = cfg.playback?.volume ?? 80;
+      document.getElementById('max-volume').value = cfg.playback?.max_volume ?? 100;
+      document.getElementById('loop-mode').value = cfg.playback?.loop_mode || 'single';
+      document.getElementById('auto-mode').value = cfg.playback?.auto_mode || 'off';
+      document.getElementById('start-track').value = cfg.playback?.start_track || '';
+
+      // EQ
+      document.getElementById('eq-enabled').checked = cfg.playback?.eq?.enabled ?? false;
+      const bands = cfg.playback?.eq?.bands || [];
+      EQ_LABELS.forEach((_, i) => {
+        const v = bands[i] ?? 0;
+        document.getElementById(`eq-band-${i}`).value = v;
+        document.getElementById(`eq-val-${i}`).textContent = v;
+      });
+
+      // Recording
+      document.getElementById('rec-device').value = cfg.recording?.input_device || '';
+      document.getElementById('rec-channels').value = cfg.recording?.channel_count ?? 8;
+      document.getElementById('rec-sample-rate').value = cfg.recording?.sample_rate ?? 192000;
+      document.getElementById('rec-bit-depth').value = String(cfg.recording?.bit_depth ?? 32);
+      document.getElementById('rec-split-mb').value = cfg.recording?.split_file_mb ?? 0;
+      document.getElementById('rec-max-mb').value = cfg.recording?.max_file_mb ?? 0;
+      document.getElementById('rec-max-mode').value = cfg.recording?.max_file_mode || 'stop';
+      document.getElementById('rec-min-free-mb').value = cfg.recording?.min_free_mb ?? 500;
+      document.getElementById('rec-filename-template').value = cfg.recording?.filename_template || '';
+
+      // Monitoring
+      document.getElementById('mon-device').value = cfg.monitoring?.output_device || '';
+      document.getElementById('mon-peak-hold').value = cfg.monitoring?.peak_hold_ms ?? 1000;
+      document.getElementById('mon-decay').value = cfg.monitoring?.meter_decay_db_per_sec ?? 20;
+
+      // Storage
+      document.getElementById('storage-tracks-dir').value = cfg.storage?.tracks_dir || '';
+      document.getElementById('storage-recordings-subdir').value = cfg.storage?.recordings_subdir || '';
+
+      // Web
+      document.getElementById('web-enabled').checked = cfg.web?.enabled ?? true;
+      document.getElementById('web-port').value = cfg.web?.port ?? 8080;
+      document.getElementById('web-timeout').value = cfg.web?.session_timeout_hours ?? 8;
+      document.getElementById('web-hostname').value = cfg.web?.hostname || '';
+
+      // AP
+      document.getElementById('ap-enabled').checked = cfg.network?.ap?.enabled ?? false;
+      document.getElementById('ap-ssid').value = cfg.network?.ap?.ssid || '';
+      document.getElementById('ap-channel').value = cfg.network?.ap?.channel ?? 6;
+      document.getElementById('ap-country').value = cfg.network?.ap?.country_code || 'US';
+      document.getElementById('ap-address').value = cfg.network?.ap?.address || '192.168.42.1';
+      document.getElementById('ap-dhcp-start').value = cfg.network?.ap?.dhcp_range_start || '192.168.42.2';
+      document.getElementById('ap-dhcp-end').value = cfg.network?.ap?.dhcp_range_end || '192.168.42.20';
+
+      // Tools
+      document.getElementById('tool-mplayer').value = cfg.tools?.mplayer || 'mplayer';
+      document.getElementById('tool-ffmpeg').value = cfg.tools?.ffmpeg || 'ffmpeg';
+      document.getElementById('tool-nmcli').value = cfg.tools?.nmcli || 'nmcli';
+
+      // Logging
+      document.getElementById('log-level').value = cfg.logging?.level || 'info';
+      document.getElementById('log-max-mb').value = cfg.logging?.max_size_mb ?? 10;
+      document.getElementById('log-file').value = cfg.logging?.log_file || '';
+    }
+
+    document.getElementById('btn-save').addEventListener('click', async () => {
+      const msg = document.getElementById('save-msg');
+      const eqBands = EQ_LABELS.map((_, i) => parseInt(document.getElementById(`eq-band-${i}`).value) || 0);
+      const patch = {
+        playback: {
+          device: document.getElementById('playback-device').value,
+          channel_count: parseInt(document.getElementById('playback-channels').value) || 2,
+          volume: parseInt(document.getElementById('volume').value) || 80,
+          max_volume: parseInt(document.getElementById('max-volume').value) || 100,
+          loop_mode: document.getElementById('loop-mode').value,
+          auto_mode: document.getElementById('auto-mode').value,
+          start_track: document.getElementById('start-track').value,
+          eq: {
+            enabled: document.getElementById('eq-enabled').checked,
+            bands: eqBands,
+          },
+        },
+        recording: {
+          input_device: document.getElementById('rec-device').value,
+          channel_count: parseInt(document.getElementById('rec-channels').value) || 8,
+          sample_rate: parseInt(document.getElementById('rec-sample-rate').value) || 192000,
+          bit_depth: parseInt(document.getElementById('rec-bit-depth').value) || 32,
+          split_file_mb: parseInt(document.getElementById('rec-split-mb').value) || 0,
+          max_file_mb: parseInt(document.getElementById('rec-max-mb').value) || 0,
+          max_file_mode: document.getElementById('rec-max-mode').value,
+          min_free_mb: parseInt(document.getElementById('rec-min-free-mb').value) || 500,
+          filename_template: document.getElementById('rec-filename-template').value,
+        },
+        monitoring: {
+          output_device: document.getElementById('mon-device').value,
+          peak_hold_ms: parseInt(document.getElementById('mon-peak-hold').value) || 1000,
+          meter_decay_db_per_sec: parseFloat(document.getElementById('mon-decay').value) || 20,
+        },
+        storage: {
+          tracks_dir: document.getElementById('storage-tracks-dir').value,
+          recordings_subdir: document.getElementById('storage-recordings-subdir').value,
+        },
+        web: {
+          enabled: document.getElementById('web-enabled').checked,
+          port: parseInt(document.getElementById('web-port').value) || 8080,
+          session_timeout_hours: parseInt(document.getElementById('web-timeout').value) || 8,
+          hostname: document.getElementById('web-hostname').value,
+        },
+        network: {
+          ap: {
+            enabled: document.getElementById('ap-enabled').checked,
+            ssid: document.getElementById('ap-ssid').value,
+            channel: parseInt(document.getElementById('ap-channel').value) || 6,
+            country_code: document.getElementById('ap-country').value,
+            address: document.getElementById('ap-address').value,
+            dhcp_range_start: document.getElementById('ap-dhcp-start').value,
+            dhcp_range_end: document.getElementById('ap-dhcp-end').value,
+          },
+        },
+        tools: {
+          mplayer: document.getElementById('tool-mplayer').value,
+          ffmpeg: document.getElementById('tool-ffmpeg').value,
+          nmcli: document.getElementById('tool-nmcli').value,
+        },
+        logging: {
+          level: document.getElementById('log-level').value,
+          max_size_mb: parseInt(document.getElementById('log-max-mb').value) || 10,
+          log_file: document.getElementById('log-file').value,
+        },
+      };
+      const resp = await apiFetch('PATCH', '/api/config', patch);
+      if (resp && resp.ok) {
+        msg.style.color = 'var(--accent)';
+        msg.textContent = 'Saved.';
+      } else {
+        msg.style.color = 'var(--danger)';
+        msg.textContent = 'Save failed.';
+      }
+      setTimeout(() => msg.textContent = '', 3000);
+    });
+
+    document.getElementById('btn-change-password').addEventListener('click', async () => {
+      const pw = document.getElementById('new-password').value;
+      const pw2 = document.getElementById('confirm-password').value;
+      const msg = document.getElementById('pw-msg');
+      if (!pw) { msg.style.color = 'var(--danger)'; msg.textContent = 'Enter a password.'; return; }
+      if (pw !== pw2) { msg.style.color = 'var(--danger)'; msg.textContent = 'Passwords do not match.'; return; }
+      const resp = await apiFetch('PATCH', '/api/config/password', { password: pw });
+      if (resp && resp.ok) {
+        msg.style.color = 'var(--accent)';
+        msg.textContent = 'Password changed.';
+        document.getElementById('new-password').value = '';
+        document.getElementById('confirm-password').value = '';
+      } else {
+        msg.style.color = 'var(--danger)';
+        msg.textContent = 'Failed.';
+      }
+      setTimeout(() => msg.textContent = '', 4000);
+    });
+
+    document.getElementById('btn-restart').addEventListener('click', async () => {
+      if (!confirm('Restart octotrack?')) return;
+      await apiFetch('POST', '/api/system/restart');
+      const msg = document.getElementById('save-msg');
+      msg.style.color = 'var(--text-muted)';
+      msg.textContent = 'Restarting…';
+      document.getElementById('btn-restart').disabled = true;
+      const poll = setInterval(async () => {
+        try {
+          const r = await fetch('/');
+          if (r.ok) { clearInterval(poll); window.location.reload(); }
+        } catch (_) {}
+      }, 1500);
+    });
+
+    document.getElementById('btn-reboot').addEventListener('click', async () => {
+      if (!confirm('Reboot the device?')) return;
+      await apiFetch('POST', '/api/system/reboot');
+      document.getElementById('save-msg').textContent = 'Rebooting…';
+    });
+
+    document.getElementById('btn-shutdown').addEventListener('click', async () => {
+      if (!confirm('Shut down the device?')) return;
+      await apiFetch('POST', '/api/system/shutdown');
+      document.getElementById('save-msg').textContent = 'Shutting down…';
+    });
+
+    document.getElementById('logout-btn').addEventListener('click', async (e) => {
+      e.preventDefault();
+      await apiFetch('POST', '/auth/logout');
+      clearToken();
+      window.location.href = '/';
+    });
+
+    loadConfig();
+  </script>
+</body>
+</html>
