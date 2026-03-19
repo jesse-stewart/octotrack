@@ -10,7 +10,7 @@ graph TD
     main --> sched["Scheduler\nBackground Thread"]
 
     app --> audio["AudioPlayer\nAudio I/O Orchestrator"]
-    app --> cfg["Config\n~/.config/octotrack/\nconfig.json"]
+    app --> cfg["Config\n~/.config/octotrack/\nconfig.toml"]
 
     audio --> mplayer["mplayer\n(playback)"]
     audio --> ffmpeg["ffmpeg\n(merge / analysis)"]
