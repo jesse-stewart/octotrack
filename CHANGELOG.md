@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.2] - 2026-03-19
+
+### Added
+- Web interface: dashboard, file browser, playback, recording, and settings pages
+- Server-sent events (SSE) for real-time status updates in the browser
+- Password-based authentication for the web interface (Argon2 hashing)
+- First-run interactive setup with `--set-password` and `--reset` flags
+- WiFi hotspot provisioning via `nmcli` for headless network access
+- `configuration.md` documenting all config options
+
+### Changed
+- Architecture documentation updated to reflect web interface additions
+
+### Fixed
+- Clippy warnings in `web/routes.rs` (unnecessary casts, `&PathBuf` → `&Path`)
+- Formatting fixes across `main.rs`
+
 ## [0.2.1] - 2026-03-18
 
 ### Added
