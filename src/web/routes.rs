@@ -12,7 +12,7 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 extern crate libc;
 use std::process::Command;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -917,8 +917,8 @@ pub async fn system_info(_auth: BearerAuth, state: web::Data<AppState>) -> impl 
         let path = CString::new(tracks_dir.as_bytes()).unwrap_or_default();
         let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
         if unsafe { libc::statvfs(path.as_ptr(), &mut stat) } == 0 {
-            let total = stat.f_blocks as u64 * stat.f_frsize as u64;
-            let free = stat.f_bavail as u64 * stat.f_frsize as u64;
+            let total = stat.f_blocks * stat.f_frsize;
+            let free = stat.f_bavail * stat.f_frsize;
             (total - free, total)
         } else {
             (0, 0)
@@ -941,12 +941,12 @@ pub async fn system_info(_auth: BearerAuth, state: web::Data<AppState>) -> impl 
 // ---------------------------------------------------------------------------
 
 /// Derive the `.peaks.json` sidecar path for an audio file.
-pub fn peaks_cache_path(file_path: &PathBuf) -> PathBuf {
+pub fn peaks_cache_path(file_path: &Path) -> PathBuf {
     let stem = file_path
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let mut p = file_path.clone();
+    let mut p = file_path.to_path_buf();
     p.set_file_name(format!("{}.peaks.json", stem));
     p
 }
