@@ -15,8 +15,8 @@ use std::io;
 use std::path::PathBuf;
 extern crate libc;
 use std::process::Command;
-use std::sync::{mpsc, Arc, RwLock};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{mpsc, Arc, RwLock};
 use tokio::sync::Semaphore;
 
 // ---------------------------------------------------------------------------
@@ -167,7 +167,6 @@ fn default_per_page() -> usize {
     20
 }
 
-
 #[get("/api/files")]
 pub async fn list_files(
     _auth: BearerAuth,
@@ -227,7 +226,14 @@ pub async fn file_detail(
 
     // Run ffprobe -show_streams -show_format -of json
     let probe_out = Command::new("ffprobe")
-        .args(["-v", "error", "-show_streams", "-show_format", "-of", "json"])
+        .args([
+            "-v",
+            "error",
+            "-show_streams",
+            "-show_format",
+            "-of",
+            "json",
+        ])
         .arg(&file_path)
         .output();
 
@@ -237,18 +243,39 @@ pub async fn file_detail(
             serde_json::from_str::<Value>(&s).ok()
         }) {
             Some(j) => {
-                let stream = j.get("streams")
-                    .and_then(|s| s.as_array())
-                    .and_then(|a| a.iter().find(|s| s.get("codec_type").and_then(|t| t.as_str()) == Some("audio")));
+                let stream = j.get("streams").and_then(|s| s.as_array()).and_then(|a| {
+                    a.iter()
+                        .find(|s| s.get("codec_type").and_then(|t| t.as_str()) == Some("audio"))
+                });
                 let fmt = j.get("format");
                 (
-                    stream.and_then(|s| s.get("codec_name")).and_then(|v| v.as_str()).map(str::to_owned),
-                    stream.and_then(|s| s.get("sample_rate")).and_then(|v| v.as_str()).and_then(|v| v.parse::<u32>().ok()),
-                    stream.and_then(|s| s.get("bits_per_sample")).and_then(|v| v.as_u64()).map(|v| v as u32)
-                        .or_else(|| stream.and_then(|s| s.get("bits_per_raw_sample")).and_then(|v| v.as_str()).and_then(|v| v.parse().ok())),
-                    fmt.and_then(|f| f.get("bit_rate")).and_then(|v| v.as_str()).and_then(|v| v.parse::<u64>().ok()),
-                    fmt.and_then(|f| f.get("format_name")).and_then(|v| v.as_str()).map(str::to_owned),
-                    fmt.and_then(|f| f.get("format_long_name")).and_then(|v| v.as_str()).map(str::to_owned),
+                    stream
+                        .and_then(|s| s.get("codec_name"))
+                        .and_then(|v| v.as_str())
+                        .map(str::to_owned),
+                    stream
+                        .and_then(|s| s.get("sample_rate"))
+                        .and_then(|v| v.as_str())
+                        .and_then(|v| v.parse::<u32>().ok()),
+                    stream
+                        .and_then(|s| s.get("bits_per_sample"))
+                        .and_then(|v| v.as_u64())
+                        .map(|v| v as u32)
+                        .or_else(|| {
+                            stream
+                                .and_then(|s| s.get("bits_per_raw_sample"))
+                                .and_then(|v| v.as_str())
+                                .and_then(|v| v.parse().ok())
+                        }),
+                    fmt.and_then(|f| f.get("bit_rate"))
+                        .and_then(|v| v.as_str())
+                        .and_then(|v| v.parse::<u64>().ok()),
+                    fmt.and_then(|f| f.get("format_name"))
+                        .and_then(|v| v.as_str())
+                        .map(str::to_owned),
+                    fmt.and_then(|f| f.get("format_long_name"))
+                        .and_then(|v| v.as_str())
+                        .map(str::to_owned),
                 )
             }
             None => (None, None, None, None, None, None),
@@ -795,20 +822,21 @@ pub async fn system_restart(_auth: BearerAuth, state: web::Data<AppState>) -> im
         let cmd = if let Some(ref tty_path) = tty {
             format!(
                 "setsid {} {} <{} >{} 2>{} &",
-                exe.display(), args.join(" "),
-                tty_path, tty_path, tty_path,
+                exe.display(),
+                args.join(" "),
+                tty_path,
+                tty_path,
+                tty_path,
             )
         } else {
             format!(
                 "nohup {} {} </dev/null >/tmp/octotrack_restart.log 2>&1 &",
-                exe.display(), args.join(" ")
+                exe.display(),
+                args.join(" ")
             )
         };
         eprintln!("restart: {}", cmd);
-        let _ = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(&cmd)
-            .spawn();
+        let _ = std::process::Command::new("sh").arg("-c").arg(&cmd).spawn();
         std::process::exit(0);
     });
     HttpResponse::Ok().body("restarting")
@@ -827,7 +855,11 @@ pub async fn system_reboot(_auth: BearerAuth) -> impl Responder {
 pub async fn system_shutdown(_auth: BearerAuth) -> impl Responder {
     std::thread::spawn(|| {
         std::thread::sleep(std::time::Duration::from_millis(300));
-        let _ = std::process::Command::new("sudo").arg("shutdown").arg("-h").arg("now").spawn();
+        let _ = std::process::Command::new("sudo")
+            .arg("shutdown")
+            .arg("-h")
+            .arg("now")
+            .spawn();
     });
     HttpResponse::Ok().body("shutting down")
 }
@@ -851,12 +883,7 @@ pub async fn system_info(_auth: BearerAuth, state: web::Data<AppState>) -> impl 
         .unwrap_or(0.0);
 
     let load_avg = fs::read_to_string("/proc/loadavg")
-        .map(|s| {
-            s.split_whitespace()
-                .take(3)
-                .collect::<Vec<_>>()
-                .join(" ")
-        })
+        .map(|s| s.split_whitespace().take(3).collect::<Vec<_>>().join(" "))
         .unwrap_or_default();
 
     // Parse /proc/meminfo for MemTotal and MemAvailable (in kB)
@@ -866,9 +893,17 @@ pub async fn system_info(_auth: BearerAuth, state: web::Data<AppState>) -> impl 
             let mut avail = 0u64;
             for line in s.lines() {
                 if line.starts_with("MemTotal:") {
-                    total = line.split_whitespace().nth(1).and_then(|v| v.parse().ok()).unwrap_or(0);
+                    total = line
+                        .split_whitespace()
+                        .nth(1)
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(0);
                 } else if line.starts_with("MemAvailable:") {
-                    avail = line.split_whitespace().nth(1).and_then(|v| v.parse().ok()).unwrap_or(0);
+                    avail = line
+                        .split_whitespace()
+                        .nth(1)
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(0);
                 }
             }
             (total, avail)
@@ -941,10 +976,14 @@ pub fn compute_and_cache_peaks(file_path: &PathBuf) -> Option<Vec<Vec<f32>>> {
     // Determine channel count via ffprobe so we can de-interleave the raw PCM.
     let probe = Command::new("ffprobe")
         .args([
-            "-v", "error",
-            "-select_streams", "a:0",
-            "-show_entries", "stream=channels",
-            "-of", "csv=p=0",
+            "-v",
+            "error",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=channels",
+            "-of",
+            "csv=p=0",
         ])
         .arg(file_path)
         .output()
@@ -1052,7 +1091,9 @@ pub fn spawn_precompute(
             .filter(|p| read_peaks_cache(p).is_none())
             .collect();
 
-        progress.total.fetch_add(pending.len() as u32, Ordering::Relaxed);
+        progress
+            .total
+            .fetch_add(pending.len() as u32, Ordering::Relaxed);
 
         for path in pending {
             let permit = semaphore.clone().acquire_owned().await.ok();

@@ -1,8 +1,8 @@
 use clap::Parser;
 use octotrack::app::{App, AppCommand, AppResult, AutoMode};
+use octotrack::config::Config;
 use octotrack::event::{Event, EventHandler};
 use octotrack::handler::handle_key_events;
-use octotrack::config::Config;
 use octotrack::schedule;
 use octotrack::setup;
 use octotrack::tui::Tui;
@@ -76,7 +76,12 @@ fn controlling_tty() -> Option<String> {
             return None;
         }
         let mut buf = [0u8; 256];
-        if libc::ttyname_r(libc::STDIN_FILENO, buf.as_mut_ptr() as *mut libc::c_char, buf.len()) == 0 {
+        if libc::ttyname_r(
+            libc::STDIN_FILENO,
+            buf.as_mut_ptr() as *mut libc::c_char,
+            buf.len(),
+        ) == 0
+        {
             std::ffi::CStr::from_ptr(buf.as_ptr() as *const libc::c_char)
                 .to_string_lossy()
                 .into_owned()
@@ -187,10 +192,14 @@ fn audio_info(path: &std::path::Path) -> (Option<u8>, Option<f32>) {
     // ffprobe fallback for FLAC, MP3, OGG, M4A, and broken/unrecognised WAV.
     let out = std::process::Command::new("ffprobe")
         .args([
-            "-v", "error",
-            "-select_streams", "a:0",
-            "-show_entries", "stream=channels,duration",
-            "-of", "csv=p=0",
+            "-v",
+            "error",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=channels,duration",
+            "-of",
+            "csv=p=0",
         ])
         .arg(path)
         .output();
@@ -198,8 +207,14 @@ fn audio_info(path: &std::path::Path) -> (Option<u8>, Option<f32>) {
         let s = String::from_utf8_lossy(&out.stdout);
         // Output format: channels,duration  (duration may be "N/A")
         let mut parts = s.trim().splitn(2, ',');
-        let channels = parts.next().and_then(|c| c.trim().parse::<u8>().ok()).filter(|&c| c > 0);
-        let duration = parts.next().and_then(|d| d.trim().parse::<f32>().ok()).filter(|&d| d > 0.0);
+        let channels = parts
+            .next()
+            .and_then(|c| c.trim().parse::<u8>().ok())
+            .filter(|&c| c > 0);
+        let duration = parts
+            .next()
+            .and_then(|d| d.trim().parse::<f32>().ok())
+            .filter(|&d| d > 0.0);
         return (channels, duration);
     }
     (None, None)
@@ -548,19 +563,32 @@ fn start_access_point(config: &Config) -> Result<(), Box<dyn std::error::Error>>
         // Create a persistent WiFi hotspot connection.
         let status = Command::new(nmcli)
             .args([
-                "con", "add",
-                "type", "wifi",
-                "ifname", "wlan0",
-                "con-name", con_name,
-                "autoconnect", "no",   // we bring it up explicitly; let NM manage LAN separately
-                "ssid", &ap.ssid,
-                "mode", "ap",
-                "band", "bg",
-                "channel", &ap.channel.to_string(),
-                "ipv4.method", "shared",
-                "ipv4.addresses", &format!("{}/24", ap.address),
-                "wifi-sec.key-mgmt", "wpa-psk",
-                "wifi-sec.psk", &ap.password,
+                "con",
+                "add",
+                "type",
+                "wifi",
+                "ifname",
+                "wlan0",
+                "con-name",
+                con_name,
+                "autoconnect",
+                "no", // we bring it up explicitly; let NM manage LAN separately
+                "ssid",
+                &ap.ssid,
+                "mode",
+                "ap",
+                "band",
+                "bg",
+                "channel",
+                &ap.channel.to_string(),
+                "ipv4.method",
+                "shared",
+                "ipv4.addresses",
+                &format!("{}/24", ap.address),
+                "wifi-sec.key-mgmt",
+                "wpa-psk",
+                "wifi-sec.psk",
+                &ap.password,
             ])
             .status()?;
         if !status.success() {
@@ -570,9 +598,13 @@ fn start_access_point(config: &Config) -> Result<(), Box<dyn std::error::Error>>
         // Update the password in case it changed.
         let _ = Command::new(nmcli)
             .args([
-                "con", "modify", con_name,
-                "wifi-sec.psk", &ap.password,
-                "ssid", &ap.ssid,
+                "con",
+                "modify",
+                con_name,
+                "wifi-sec.psk",
+                &ap.password,
+                "ssid",
+                &ap.ssid,
             ])
             .status();
     }
