@@ -598,7 +598,10 @@ fn main() -> AppResult<()> {
         let tracks_dir = find_tracks_directory();
         let audio_exts = ["wav", "mp3", "flac", "ogg", "m4a"];
         let entries = fs::read_dir(&tracks_dir).unwrap_or_else(|e| {
-            eprintln!("error: cannot read tracks directory '{}': {}", tracks_dir, e);
+            eprintln!(
+                "error: cannot read tracks directory '{}': {}",
+                tracks_dir, e
+            );
             std::process::exit(1);
         });
         let mut count = 0;
@@ -703,7 +706,13 @@ fn main() -> AppResult<()> {
 
     // Spawn the web server
     let tty = controlling_tty();
-    let _web_handle = web::spawn(config.clone(), status.clone(), cmd_tx, broadcaster.clone(), tty);
+    let _web_handle = web::spawn(
+        config.clone(),
+        status.clone(),
+        cmd_tx,
+        broadcaster.clone(),
+        tty,
+    );
 
     match mode {
         RunMode::Tui => run_tui(app, status, broadcaster, cmd_rx),
