@@ -69,7 +69,11 @@
     function dbToNorm(db) { return Math.max(0, (db + 60) / 60); }
 
     onSseEvent('levels', (e) => {
-      renderLevels(levelCanvas, e.input.map(dbToNorm));
+      if (e.output && e.output.length > 0) {
+        renderLevels(levelCanvas, e.output.map(dbToNorm));
+      } else {
+        renderLevels(levelCanvas, []);
+      }
     });
 
     onSseEvent('playback_position', (e) => {

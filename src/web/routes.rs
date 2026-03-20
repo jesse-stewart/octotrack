@@ -810,11 +810,18 @@ pub async fn devices_capture(_auth: BearerAuth) -> impl Responder {
 
 #[post("/api/system/restart")]
 pub async fn system_restart(_auth: BearerAuth, state: web::Data<AppState>) -> impl Responder {
-    // Spawn a thread that re-execs the current binary after a short delay so
-    // the HTTP response can be delivered before the process exits.
+    // Signal the app to stop playback/recording so ALSA devices are released
+    // before exit. The app loop processes these within one tick (~250ms).
+    let _ = state.cmd_tx.send(AppCommand::Stop);
+    let _ = state.cmd_tx.send(AppCommand::StopRecording);
+
+    // Spawn a thread that re-execs the current binary after a delay so
+    // the HTTP response can be delivered and stop commands can be processed.
     let tty = state.controlling_tty.clone();
     std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(300));
+        // 600ms: enough for the HTTP response (~100ms) and two app ticks (~500ms)
+        // to process the Stop/StopRecording commands before we exit.
+        std::thread::sleep(std::time::Duration::from_millis(600));
         let exe = std::env::current_exe().expect("current_exe");
         let args: Vec<String> = std::env::args().skip(1).collect();
         // If we know the original controlling terminal, redirect the new process
