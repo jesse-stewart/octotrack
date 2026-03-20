@@ -314,34 +314,60 @@ fn wav_info(path: &std::path::Path) -> (Option<u8>, Option<f32>) {
     (ch.map(|c| c as u8), duration)
 }
 
+/// Cached track metadata to avoid re-scanning every tick.
+struct TrackListCache {
+    /// The track paths when the cache was last built.
+    paths: Vec<PathBuf>,
+    /// The computed metadata for those paths.
+    entries: Vec<TrackEntry>,
+}
+
+impl TrackListCache {
+    fn new() -> Self {
+        Self {
+            paths: Vec::new(),
+            entries: Vec::new(),
+        }
+    }
+
+    /// Returns cached entries if the track list hasn't changed, otherwise
+    /// recomputes and caches the result.
+    fn get(&mut self, track_list: &[PathBuf]) -> &[TrackEntry] {
+        if self.paths != track_list {
+            self.paths = track_list.to_vec();
+            self.entries = track_list
+                .iter()
+                .map(|p| {
+                    let meta = fs::metadata(p).ok();
+                    let size_bytes = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+                    let modified_secs = meta
+                        .and_then(|m| m.modified().ok())
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs());
+                    let name = p
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    let path = p.to_string_lossy().into_owned();
+                    let (channels, duration_secs) = audio_info(p);
+                    TrackEntry {
+                        name,
+                        path,
+                        size_bytes,
+                        duration_secs,
+                        channels,
+                        modified_secs,
+                    }
+                })
+                .collect();
+        }
+        &self.entries
+    }
+}
+
 /// Build a `SharedStatus` snapshot from the current App state.
-fn build_shared_status(app: &App) -> SharedStatus {
-    let track_list: Vec<TrackEntry> = app
-        .track_list
-        .iter()
-        .map(|p| {
-            let meta = fs::metadata(p).ok();
-            let size_bytes = meta.as_ref().map(|m| m.len()).unwrap_or(0);
-            let modified_secs = meta
-                .and_then(|m| m.modified().ok())
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_secs());
-            let name = p
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            let path = p.to_string_lossy().into_owned();
-            let (channels, duration_secs) = audio_info(p);
-            TrackEntry {
-                name,
-                path,
-                size_bytes,
-                duration_secs,
-                channels,
-                modified_secs,
-            }
-        })
-        .collect();
+fn build_shared_status(app: &App, cache: &mut TrackListCache) -> SharedStatus {
+    let track_list = cache.get(&app.track_list).to_vec();
 
     SharedStatus {
         playing: app.is_playing,
@@ -374,8 +400,8 @@ fn build_shared_status(app: &App) -> SharedStatus {
 }
 
 /// Update `SharedStatus` and push SSE events on each tick.
-fn update_shared(app: &App, status: &Arc<RwLock<SharedStatus>>, broadcaster: &SseBroadcaster) {
-    let new_status = build_shared_status(app);
+fn update_shared(app: &App, status: &Arc<RwLock<SharedStatus>>, broadcaster: &SseBroadcaster, cache: &mut TrackListCache) {
+    let new_status = build_shared_status(app, cache);
 
     {
         let mut s = status.write().unwrap();
@@ -463,30 +489,37 @@ fn run_tui(
     let events = EventHandler::new(250);
     let mut tui = Tui::new(terminal, events);
     tui.init()?;
+    let mut track_cache = TrackListCache::new();
+    let mut needs_redraw = true;
 
     // Start the main loop.
     while app.running {
         // Drain web commands
         drain_commands(&mut app, &cmd_rx);
 
-        // Update playback info (position and levels)
-        app.update_playback_info();
+        // Render the user interface only when state changed.
+        if needs_redraw {
+            tui.draw(&mut app)?;
+            needs_redraw = false;
+        }
 
-        // Render the user interface.
-        tui.draw(&mut app)?;
-
-        // Check if track finished and handle looping
-        app.check_playback_status();
-
-        // Handle events.
+        // Handle events (blocks until next event).
         match tui.events.next()? {
             Event::Tick => {
+                app.update_playback_info();
+                app.check_playback_status();
                 app.tick();
-                update_shared(&app, &status, &broadcaster);
+                update_shared(&app, &status, &broadcaster, &mut track_cache);
+                needs_redraw = true;
             }
-            Event::Key(key_event) => handle_key_events(key_event, &mut app)?,
+            Event::Key(key_event) => {
+                handle_key_events(key_event, &mut app)?;
+                needs_redraw = true;
+            }
             Event::Mouse(_) => {}
-            Event::Resize(_, _) => {}
+            Event::Resize(_, _) => {
+                needs_redraw = true;
+            }
         }
     }
 
@@ -503,13 +536,14 @@ fn run_headless(
     broadcaster: SseBroadcaster,
     cmd_rx: std::sync::mpsc::Receiver<AppCommand>,
 ) {
+    let mut track_cache = TrackListCache::new();
     loop {
         {
             let mut app = app.lock().unwrap();
             drain_commands(&mut app, &cmd_rx);
             app.update_playback_info();
             app.tick();
-            update_shared(&app, &status, &broadcaster);
+            update_shared(&app, &status, &broadcaster, &mut track_cache);
         }
         std::thread::sleep(Duration::from_millis(250));
     }
@@ -727,7 +761,8 @@ fn main() -> AppResult<()> {
     }
 
     // Set up shared state for the web server
-    let status: Arc<RwLock<SharedStatus>> = Arc::new(RwLock::new(build_shared_status(&app)));
+    let mut initial_cache = TrackListCache::new();
+    let status: Arc<RwLock<SharedStatus>> = Arc::new(RwLock::new(build_shared_status(&app, &mut initial_cache)));
     let broadcaster = SseBroadcaster::new();
     let config = Arc::new(RwLock::new(app.config.clone()));
 

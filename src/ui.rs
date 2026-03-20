@@ -215,117 +215,63 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         .borders(Borders::ALL)
         .padding(Padding::new(1, 1, 0, 0));
 
-    if channel_count > 0 && (app.is_playing || app.is_recording) {
-        let bars: Vec<Bar> = app
+    if channel_count > 0 && (app.is_playing || app.is_recording || app.is_monitoring) {
+        let meter_style = if app.is_monitoring && !app.is_playing && !app.is_recording {
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM)
+        } else {
+            Style::default()
+        };
+
+        let level_lines: String = app
             .channel_levels
             .iter()
             .enumerate()
             .take(channel_count)
             .map(|(i, &level)| {
-                // Convert dB to a display value (0-60 range for visualization)
-                let level_clamped = level.clamp(-60.0, 0.0);
-                let display_value = (level_clamped + 60.0) as u64;
-
-                // Choose color based on level
-                let color = if level > -6.0 {
-                    Color::Red // Clipping warning
-                } else if level > -12.0 {
-                    COLOR_AMBER[0] // Good level
-                } else if level > -24.0 {
-                    Color::Yellow // Medium level
-                } else {
-                    Color::Green // Low level
-                };
-
-                let label = format!("Ch{} {:.0}dB", i + 1, level);
-
-                Bar::default()
-                    .value(display_value)
-                    .label(label.into())
-                    .style(Style::default().fg(color))
-                    .value_style(Style::default().fg(color).bold())
+                let clamped = level.clamp(-60.0, 0.0);
+                // Map -60..0 dB to 0..30 chars
+                let filled = ((clamped + 60.0) / 2.0) as usize;
+                let bar: String = "█".repeat(filled);
+                format!("{:2}│{:<30}│{:>3.0}", i + 1, bar, level)
             })
-            .collect();
+            .collect::<Vec<_>>()
+            .join("\n");
 
-        let bar_chart = BarChart::default()
+        let level_text = Paragraph::new(level_lines)
             .block(bar_chart_block)
-            .data(BarGroup::default().bars(&bars))
-            .bar_width(3)
-            .bar_gap(1)
-            .max(60); // -60dB to 0dB range
+            .style(meter_style);
 
-        frame.render_widget(bar_chart, meter_chunks[0]);
+        frame.render_widget(level_text, meter_chunks[0]);
     } else {
-        // Show placeholder when not playing or recording
-        let placeholder_text = if app.is_monitoring {
-            "Monitoring..."
-        } else if !app.is_playing && !app.is_recording {
-            "Press [Space] to play  [R] to record  [M] to monitor"
-        } else {
-            "Initializing meters..."
-        };
-        let placeholder = Paragraph::new(placeholder_text)
+        let placeholder = Paragraph::new("[Space] Play  [R] Record  [M] Monitor")
             .block(bar_chart_block)
             .alignment(Alignment::Center);
 
         frame.render_widget(placeholder, meter_chunks[0]);
-
-        // Semi-transparent monitoring VU meters rendered on top of placeholder
-        if channel_count > 0 && app.is_monitoring {
-            let mon_bars: Vec<Bar> = app
-                .channel_levels
-                .iter()
-                .enumerate()
-                .take(channel_count)
-                .map(|(i, &level)| {
-                    let level_clamped = level.clamp(-60.0, 0.0);
-                    let display_value = (level_clamped + 60.0) as u64;
-                    let label = format!("Ch{} {:.0}dB", i + 1, level);
-                    let dim_cyan = Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM);
-                    Bar::default()
-                        .value(display_value)
-                        .label(label.into())
-                        .style(dim_cyan)
-                        .value_style(dim_cyan)
-                })
-                .collect();
-
-            let mon_block = Block::default()
-                .title("Monitor")
-                .title_alignment(Alignment::Left)
-                .border_type(BorderType::Rounded)
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM))
-                .padding(Padding::new(1, 1, 0, 0));
-
-            let mon_chart = BarChart::default()
-                .block(mon_block)
-                .data(BarGroup::default().bars(&mon_bars))
-                .bar_width(3)
-                .bar_gap(1)
-                .max(60);
-
-            frame.render_widget(mon_chart, meter_chunks[0]);
-        }
     }
 
-    // Create volume indicator (vertical bar)
-    let volume_bar = Bar::default()
-        .value(app.volume as u64)
-        .label(format!("{}%", app.volume).into())
-        .style(Style::default().fg(COLOR_AMBER[0]))
-        .value_style(Style::default().fg(COLOR_AMBER[0]).bold());
+    // Volume indicator — vertical text fill
+    let vol_rows = meter_chunks[1].height.saturating_sub(3) as usize; // account for title + padding
+    let filled = (app.volume as usize * vol_rows) / 100;
+    let mut vol_lines = String::new();
+    for r in 0..vol_rows {
+        if r < vol_rows - filled {
+            vol_lines.push_str("     \n");
+        } else {
+            vol_lines.push_str("  █  \n");
+        }
+    }
+    vol_lines.push_str(&format!(" {}% ", app.volume));
 
-    let volume_chart = BarChart::default()
+    let volume_chart = Paragraph::new(vol_lines)
         .block(
             Block::default()
-                .title("Volume")
+                .title("Vol")
                 .title_alignment(Alignment::Center)
-                .padding(Padding::new(2, 1, 1, 0)),
+                .padding(Padding::new(1, 1, 0, 0)),
         )
-        .data(BarGroup::default().bars(&[volume_bar]))
-        .bar_width(5)
-        .max(100);
+        .style(Style::default().fg(COLOR_AMBER[0]))
+        .alignment(Alignment::Center);
 
     let status_content_1 = Paragraph::new("[←] Prev")
         .block(
