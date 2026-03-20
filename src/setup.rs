@@ -1,8 +1,10 @@
-//! First-run setup: interactive password prompts and factory reset.
+//! First-run setup: interactive password prompts, autostart configuration,
+//! and factory reset.
 //!
 //! Setup runs exactly once — when `config.toml` does not yet exist.
-//! After that, use `--set-password` to change passwords or `--reset` to
-//! wipe passwords and re-run setup on next start.
+//! After that, use `--set-password` to change passwords / re-run setup, or
+//! `--configure-autostart` to reconfigure autostart independently.
+//! Use `--reset` to wipe passwords and force first-run on next start.
 
 use crate::config::{toml_path, Config};
 use argon2::{
@@ -11,6 +13,274 @@ use argon2::{
 };
 use rand::rngs::OsRng;
 use std::io::{self, IsTerminal, Write};
+
+// ---------------------------------------------------------------------------
+// Autostart
+// ---------------------------------------------------------------------------
+
+const BASHRC_START: &str = "# octotrack autostart (begin)";
+const BASHRC_END: &str = "# octotrack autostart (end)";
+
+enum AutostartMethod {
+    Systemd,
+    Bashrc,
+}
+
+enum DisplayType {
+    Tft,
+    Hdmi,
+}
+
+/// Interactive, idempotent autostart configuration.
+///
+/// Supports two methods:
+///   - systemd service: installs `/etc/systemd/system/octotrack.service`
+///   - .bashrc autologin: writes a guarded block into `~/.bashrc` and sets
+///     up the tty1 autologin drop-in
+///
+/// Safe to re-run: existing configuration is replaced in-place.
+pub fn configure_autostart() -> Result<(), Box<dyn std::error::Error>> {
+    let exe = std::env::current_exe()?;
+    let exe_str = exe.to_string_lossy().to_string();
+
+    // Prefer release binary when we're running the debug build.
+    let release_exe = {
+        let s = exe_str.replace("/target/debug/", "/target/release/");
+        if s != exe_str && std::path::Path::new(&s).exists() {
+            s
+        } else {
+            exe_str.clone()
+        }
+    };
+
+    // Walk up past target/debug or target/release to the project root.
+    let workdir = exe
+        .parent()
+        .and_then(|p| {
+            if p.file_name()
+                .map(|n| n == "debug" || n == "release")
+                .unwrap_or(false)
+            {
+                p.parent().and_then(|p2| {
+                    if p2.file_name().map(|n| n == "target").unwrap_or(false) {
+                        p2.parent()
+                    } else {
+                        Some(p2)
+                    }
+                })
+            } else {
+                Some(p)
+            }
+        })
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .to_string_lossy()
+        .to_string();
+
+    let user = std::env::var("USER").unwrap_or_else(|_| "pi".to_string());
+
+    println!("\n  Autostart configuration");
+    println!("  Binary : {}", release_exe);
+    println!("  Workdir: {}", workdir);
+    println!("  User   : {}", user);
+    println!();
+    println!("  Method:");
+    println!("    1 — systemd service  (recommended, restarts on crash)");
+    println!("    2 — .bashrc autologin (simpler, requires tty1 autologin)");
+    println!("    3 — skip");
+
+    let method = loop {
+        print!("\n  Choice [1/2/3]: ");
+        io::stdout().flush()?;
+        let mut line = String::new();
+        io::stdin().read_line(&mut line)?;
+        match line.trim() {
+            "1" => break AutostartMethod::Systemd,
+            "2" => break AutostartMethod::Bashrc,
+            "3" | "" => return Ok(()),
+            _ => eprintln!("  Enter 1, 2, or 3."),
+        }
+    };
+
+    println!("\n  Display type:");
+    println!("    1 — TFT / framebuffer on tty1");
+    println!("    2 — HDMI or headless");
+
+    let display = loop {
+        print!("\n  Choice [1/2]: ");
+        io::stdout().flush()?;
+        let mut line = String::new();
+        io::stdin().read_line(&mut line)?;
+        match line.trim() {
+            "1" => break DisplayType::Tft,
+            "2" | "" => break DisplayType::Hdmi,
+            _ => eprintln!("  Enter 1 or 2."),
+        }
+    };
+
+    match method {
+        AutostartMethod::Systemd => install_systemd_service(&release_exe, &workdir, &user, display),
+        AutostartMethod::Bashrc => install_bashrc_autostart(&release_exe, display),
+    }
+}
+
+fn install_systemd_service(
+    exe: &str,
+    workdir: &str,
+    user: &str,
+    display: DisplayType,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let tty_section = match display {
+        DisplayType::Tft => concat!(
+            "ExecStartPre=/bin/sleep 5\n",
+            "ExecStartPre=/bin/chvt 1\n",
+            "ExecStartPre=/usr/bin/clear\n",
+            "StandardInput=tty\n",
+            "StandardOutput=tty\n",
+            "StandardError=tty\n",
+            "TTYPath=/dev/tty1\n",
+            "TTYReset=yes\n",
+            "TTYVHangup=yes\n",
+            "Environment=TERM=linux\n",
+        ),
+        DisplayType::Hdmi => "StandardOutput=journal\nStandardError=journal\n",
+    };
+
+    let service = format!(
+        "[Unit]\n\
+         Description=Octotrack Multi-Channel Audio Player\n\
+         After=sound.target multi-user.target\n\
+         \n\
+         [Service]\n\
+         Type=simple\n\
+         User={user}\n\
+         WorkingDirectory={workdir}\n\
+         {tty_section}\
+         ExecStart={exe}\n\
+         Restart=always\n\
+         RestartSec=3\n\
+         \n\
+         [Install]\n\
+         WantedBy=multi-user.target\n"
+    );
+
+    let path = "/etc/systemd/system/octotrack.service";
+    if try_sudo_write(path, &service) {
+        let _ = std::process::Command::new("sudo")
+            .args(["systemctl", "daemon-reload"])
+            .status();
+        let _ = std::process::Command::new("sudo")
+            .args(["systemctl", "enable", "octotrack"])
+            .status();
+        println!("\n  Service installed at {}.", path);
+        println!("  To start now: sudo systemctl start octotrack");
+    } else {
+        println!("\n  Could not write {} (sudo required).", path);
+        println!("  Install manually:\n");
+        println!("  sudo tee {} << 'EOF'\n{}EOF", path, service);
+        println!(
+            "  sudo systemctl daemon-reload && sudo systemctl enable --now octotrack"
+        );
+    }
+    Ok(())
+}
+
+fn install_bashrc_autostart(
+    exe: &str,
+    display: DisplayType,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let run_cmd = match display {
+        DisplayType::Tft => exe.to_string(),
+        DisplayType::Hdmi => format!("{} --headless", exe),
+    };
+
+    let block = format!(
+        "{start}\nif [ \"$(tty)\" = \"/dev/tty1\" ]; then\n    sleep 4\n    clear\n    {cmd}\nfi\n{end}\n",
+        start = BASHRC_START,
+        cmd = run_cmd,
+        end = BASHRC_END,
+    );
+
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+    let bashrc_path = format!("{}/.bashrc", home);
+
+    let existing = std::fs::read_to_string(&bashrc_path).unwrap_or_default();
+    let new_content = if let Some(start) = existing.find(BASHRC_START) {
+        let end = existing
+            .find(BASHRC_END)
+            .map(|i| i + BASHRC_END.len())
+            .unwrap_or(start);
+        let end = if existing[end..].starts_with('\n') {
+            end + 1
+        } else {
+            end
+        };
+        format!("{}{}{}", &existing[..start], block, &existing[end..])
+    } else {
+        format!("{}\n{}", existing.trim_end(), block)
+    };
+
+    std::fs::write(&bashrc_path, new_content)?;
+    println!("\n  Updated {}.", bashrc_path);
+
+    // Set up the tty1 autologin drop-in.
+    let autologin_dir = "/etc/systemd/system/getty@tty1.service.d";
+    let autologin_conf = format!("{}/autologin.conf", autologin_dir);
+    let user = std::env::var("USER").unwrap_or_else(|_| "pi".to_string());
+    let autologin_content = format!(
+        "[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin {} --noclear %I $TERM\n",
+        user
+    );
+
+    let already_set = std::fs::read_to_string(&autologin_conf)
+        .map(|s| s.contains(&format!("--autologin {}", user)))
+        .unwrap_or(false);
+
+    if already_set {
+        println!("  tty1 autologin already configured.");
+    } else if try_sudo_mkdir(autologin_dir)
+        && try_sudo_write(&autologin_conf, &autologin_content)
+    {
+        let _ = std::process::Command::new("sudo")
+            .args(["systemctl", "daemon-reload"])
+            .status();
+        println!("  tty1 autologin configured.");
+    } else {
+        println!("  Could not configure autologin (sudo required).");
+        println!("  Set it up manually:\n");
+        println!("  sudo mkdir -p {}", autologin_dir);
+        println!(
+            "  sudo tee {} << 'EOF'\n{}EOF",
+            autologin_conf, autologin_content
+        );
+        println!("  sudo systemctl daemon-reload");
+    }
+
+    Ok(())
+}
+
+fn try_sudo_write(path: &str, content: &str) -> bool {
+    use std::io::Write as _;
+    let Ok(mut child) = std::process::Command::new("sudo")
+        .args(["tee", path])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    if let Some(stdin) = child.stdin.as_mut() {
+        let _ = stdin.write_all(content.as_bytes());
+    }
+    child.wait().map(|s| s.success()).unwrap_or(false)
+}
+
+fn try_sudo_mkdir(path: &str) -> bool {
+    std::process::Command::new("sudo")
+        .args(["mkdir", "-p", path])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
 
 /// Returns `true` when first-run setup must run.
 /// This is only the case when `config.toml` does not exist yet.
@@ -58,6 +328,10 @@ pub fn run_setup(mut config: Config) -> Result<Config, Box<dyn std::error::Error
     }
 
     config.save()?;
+
+    // Autostart
+    println!();
+    configure_autostart()?;
 
     println!("\n  Setup complete. Starting octotrack...");
     if config.network.ap.enabled {

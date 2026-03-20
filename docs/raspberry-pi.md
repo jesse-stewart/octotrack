@@ -2,32 +2,43 @@
 
 ## Running on Boot
 
-To automatically start Octotrack when your system boots, create a systemd service.
-
-### 1. Create a systemd service file
+The easiest way to configure autostart is to let the setup wizard do it:
 
 ```bash
-sudo nano /etc/systemd/system/octotrack.service
+octotrack --configure-autostart
 ```
 
-### 2. Add the following content
+This is idempotent — safe to run again if you want to change the method or display type. It is also run automatically during first-run setup and when you run `--set-password`.
 
-Replace `/home/yourusername` with your actual home directory path:
+Two methods are supported depending on your display setup:
+
+---
+
+### Method 1: systemd service (recommended)
+
+Best for TFT/framebuffer displays and headless setups. The service restarts automatically on crash.
+
+**TFT / framebuffer on tty1:**
 
 ```ini
 [Unit]
 Description=Octotrack Multi-Channel Audio Player
-After=sound.target
+After=sound.target multi-user.target
 
 [Service]
 Type=simple
-User=yourusername
-WorkingDirectory=/home/yourusername/octotrack
-ExecStart=/home/yourusername/octotrack/target/release/octotrack
+User=jesse
+WorkingDirectory=/home/jesse/octotrack
+ExecStartPre=/bin/sleep 5
+ExecStartPre=/bin/chvt 1
+ExecStartPre=/usr/bin/clear
+ExecStart=/home/jesse/octotrack/target/release/octotrack
 StandardInput=tty
 StandardOutput=tty
 StandardError=tty
 TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
 Environment=TERM=linux
 Restart=always
 RestartSec=3
@@ -36,38 +47,83 @@ RestartSec=3
 WantedBy=multi-user.target
 ```
 
-**Why `StandardError=tty`:** Ratatui writes to stderr by design. If this is set to `journal`, all rendering output is swallowed by the system log and nothing appears on screen.
+**HDMI / headless:**
 
-**Why `TERM=linux`:** Crossterm needs this to know which escape sequences to use. Without it the variable is unset inside the service and the terminal may not render correctly.
+```ini
+[Unit]
+Description=Octotrack Multi-Channel Audio Player
+After=sound.target multi-user.target
 
-### 3. Enable and start the service
+[Service]
+Type=simple
+User=jesse
+WorkingDirectory=/home/jesse/octotrack
+ExecStart=/home/jesse/octotrack/target/release/octotrack
+StandardOutput=journal
+StandardError=journal
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+```
+
+**Why `StandardError=tty` for TFT:** Ratatui writes to stderr by design. If set to `journal`, all rendering output is swallowed and nothing appears on screen.
+
+**Why `TERM=linux`:** Crossterm needs this to select the right escape sequences. Without it the terminal may not render correctly.
+
+Install and enable manually:
 
 ```bash
-# Reload systemd to recognize the new service
+sudo nano /etc/systemd/system/octotrack.service
+# paste one of the blocks above, adjusted for your username/path
+
 sudo systemctl daemon-reload
-
-# Enable the service to start on boot
-sudo systemctl enable octotrack.service
-
-# Start the service now
-sudo systemctl start octotrack.service
+sudo systemctl enable --now octotrack
 ```
 
-### 4. Managing the service
+Managing the service:
 
 ```bash
-# Check status
-sudo systemctl status octotrack.service
-
-# View logs
-sudo journalctl -u octotrack.service -f
-
-# Stop the service
-sudo systemctl stop octotrack.service
-
-# Disable autostart
-sudo systemctl disable octotrack.service
+sudo systemctl status octotrack
+sudo journalctl -u octotrack -f
+sudo systemctl stop octotrack
+sudo systemctl disable octotrack
 ```
+
+---
+
+### Method 2: .bashrc autologin
+
+A simpler approach that works well with HDMI displays. Octotrack launches when tty1 logs in automatically.
+
+**Step 1 — Enable tty1 autologin:**
+
+```bash
+sudo mkdir -p /etc/systemd/system/getty@tty1.service.d
+sudo tee /etc/systemd/system/getty@tty1.service.d/autologin.conf << 'EOF'
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --autologin jesse --noclear %I $TERM
+EOF
+sudo systemctl daemon-reload
+```
+
+**Step 2 — Add launch block to `~/.bashrc`:**
+
+```bash
+# octotrack autostart (begin)
+if [ "$(tty)" = "/dev/tty1" ]; then
+    sleep 4
+    clear
+    /home/jesse/octotrack/target/release/octotrack
+fi
+# octotrack autostart (end)
+```
+
+The `--configure-autostart` command writes and maintains this block automatically, using the markers to replace it on re-runs.
+
+Note: this method has no automatic restart on crash. Use the systemd method if that matters.
 
 ## USB Storage
 

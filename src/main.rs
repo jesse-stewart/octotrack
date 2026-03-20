@@ -48,6 +48,10 @@ struct Cli {
     /// Pre-compute waveform peaks for all tracks and exit
     #[arg(long)]
     precompute_peaks: bool,
+
+    /// Configure autostart (systemd service or .bashrc autologin) and exit
+    #[arg(long)]
+    configure_autostart: bool,
 }
 
 fn detect_mode(cli: &Cli) -> RunMode {
@@ -696,6 +700,12 @@ fn main() -> AppResult<()> {
             }
         }
         eprintln!("computed: {}  skipped (cached): {}", count, skipped);
+        return Ok(());
+    }
+
+    // --- Configure autostart ---------------------------------------------
+    if cli.configure_autostart {
+        setup::configure_autostart()?;
         return Ok(());
     }
 
