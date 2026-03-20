@@ -241,6 +241,28 @@
       </div>
     </div>
 
+    <!-- Display -->
+    <div class="card">
+      <h2>Display</h2>
+      <div class="row">
+        <div class="form-group">
+          <label>Level Meters</label>
+          <select id="display-level-meters">
+            <option value="none">None</option>
+            <option value="small">Small</option>
+            <option value="large">Large</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Title</label>
+          <select id="display-title">
+            <option value="small">Small</option>
+            <option value="large">Large</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
     <!-- Tools -->
     <div class="card">
       <h2>Tools</h2>
@@ -393,6 +415,10 @@
       document.getElementById('ap-dhcp-start').value = cfg.network?.ap?.dhcp_range_start || '192.168.42.2';
       document.getElementById('ap-dhcp-end').value = cfg.network?.ap?.dhcp_range_end || '192.168.42.20';
 
+      // Display
+      document.getElementById('display-level-meters').value = cfg.display?.level_meters || 'small';
+      document.getElementById('display-title').value = cfg.display?.title || 'large';
+
       // Tools
       document.getElementById('tool-mplayer').value = cfg.tools?.mplayer || 'mplayer';
       document.getElementById('tool-ffmpeg').value = cfg.tools?.ffmpeg || 'ffmpeg';
@@ -457,6 +483,10 @@
             dhcp_range_start: document.getElementById('ap-dhcp-start').value,
             dhcp_range_end: document.getElementById('ap-dhcp-end').value,
           },
+        },
+        display: {
+          level_meters: document.getElementById('display-level-meters').value,
+          title: document.getElementById('display-title').value,
         },
         tools: {
           mplayer: document.getElementById('tool-mplayer').value,

@@ -102,39 +102,48 @@ function connectSse() {
  * @param {number[]} levels - values 0.0 to 1.0 per channel
  */
 function renderLevels(canvas, levels) {
-  if (!canvas || !levels || levels.length === 0) return;
+  if (!canvas) return;
+  if (!levels || levels.length === 0) {
+    canvas.height = 0;
+    canvas.style.height = '0px';
+    return;
+  }
   const ctx = canvas.getContext('2d');
   const w = canvas.clientWidth;
-  const h = canvas.clientHeight;
-  canvas.width = w;
-  canvas.height = h;
-
-  ctx.clearRect(0, 0, w, h);
 
   const n = levels.length;
-  const gap = 3;
-  const barW = Math.max(1, (w - gap * (n - 1)) / n);
+  const barH = 14;
+  const gap = 2;
+  const labelW = 28;
+  const totalH = n * barH + (n - 1) * gap;
+  canvas.width = w;
+  canvas.height = totalH;
+  canvas.style.height = totalH + 'px';
+
+  ctx.clearRect(0, 0, w, totalH);
+  ctx.font = '10px monospace';
+  ctx.textBaseline = 'middle';
 
   for (let i = 0; i < n; i++) {
     const level = Math.min(1.0, Math.max(0, levels[i]));
-    const barH = Math.round(level * h);
-    const x = i * (barW + gap);
-    const y = h - barH;
+    const y = i * (barH + gap);
+    const meterW = w - labelW;
+    const fillW = Math.round(level * meterW);
 
-    // Color: green < 0.7, yellow < 0.9, red >= 0.9
     let color;
-    if (level >= 0.9) {
-      color = '#f44336';
-    } else if (level >= 0.7) {
-      color = '#ff9800';
-    } else {
-      color = '#4caf50';
-    }
+    if (level >= 0.9) color = '#f44336';
+    else if (level >= 0.7) color = '#ff9800';
+    else color = '#4caf50';
 
+    // Track background
     ctx.fillStyle = '#1e1e1e';
-    ctx.fillRect(x, 0, barW, h);
+    ctx.fillRect(0, y, meterW, barH);
+    // Filled bar
     ctx.fillStyle = color;
-    ctx.fillRect(x, y, barW, barH);
+    ctx.fillRect(0, y, fillW, barH);
+    // Channel label
+    ctx.fillStyle = '#888';
+    ctx.fillText((i + 1).toString(), meterW + 6, y + barH / 2);
   }
 }
 

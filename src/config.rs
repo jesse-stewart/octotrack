@@ -222,6 +222,44 @@ impl Default for StorageConfig {
 // [display]
 // ---------------------------------------------------------------------------
 
+/// `"none"` | `"small"` | `"large"`
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LevelMeterSize {
+    None,
+    #[default]
+    Small,
+    Large,
+}
+
+impl LevelMeterSize {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Small => "small",
+            Self::Large => "large",
+        }
+    }
+}
+
+/// `"small"` | `"large"`
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TitleSize {
+    Small,
+    #[default]
+    Large,
+}
+
+impl TitleSize {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Small => "small",
+            Self::Large => "large",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DisplayConfig {
@@ -230,6 +268,10 @@ pub struct DisplayConfig {
     pub scale_factor: f32,
     /// `"dark"` | `"light"`
     pub theme: String,
+    /// `"none"` | `"small"` | `"large"`
+    pub level_meters: LevelMeterSize,
+    /// `"small"` | `"large"`
+    pub title: TitleSize,
 }
 
 impl Default for DisplayConfig {
@@ -238,6 +280,8 @@ impl Default for DisplayConfig {
             mode: "auto".to_string(),
             scale_factor: 1.0,
             theme: "dark".to_string(),
+            level_meters: LevelMeterSize::Small,
+            title: TitleSize::Large,
         }
     }
 }
@@ -521,6 +565,8 @@ fn update_doc(doc: &mut toml_edit::DocumentMut, cfg: &Config) {
     doc["display"]["mode"] = value(cfg.display.mode.as_str());
     doc["display"]["scale_factor"] = value(cfg.display.scale_factor as f64);
     doc["display"]["theme"] = value(cfg.display.theme.as_str());
+    doc["display"]["level_meters"] = value(cfg.display.level_meters.as_str());
+    doc["display"]["title"] = value(cfg.display.title.as_str());
 
     // [web] ------------------------------------------------------------
     if !doc.contains_key("web") {
@@ -548,7 +594,32 @@ fn update_doc(doc: &mut toml_edit::DocumentMut, cfg: &Config) {
     doc["logging"]["log_file"] = value(cfg.logging.log_file.as_str());
     doc["logging"]["max_size_mb"] = value(cfg.logging.max_size_mb as i64);
 
-    // [[channels]], [[network.*]], [[network.known_networks]] are user-managed
+    // [network.ap] -----------------------------------------------------
+    {
+        if !doc.contains_key("network") {
+            doc.insert("network", Item::Table(Table::new()));
+        }
+        let has_ap = doc["network"]
+            .as_table()
+            .map(|t| t.contains_key("ap"))
+            .unwrap_or(false);
+        if !has_ap {
+            if let Some(t) = doc["network"].as_table_mut() {
+                t.insert("ap", Item::Table(Table::new()));
+            }
+        }
+        doc["network"]["ap"]["enabled"] = value(cfg.network.ap.enabled);
+        doc["network"]["ap"]["ssid"] = value(cfg.network.ap.ssid.as_str());
+        doc["network"]["ap"]["channel"] = value(cfg.network.ap.channel as i64);
+        doc["network"]["ap"]["country_code"] = value(cfg.network.ap.country_code.as_str());
+        doc["network"]["ap"]["address"] = value(cfg.network.ap.address.as_str());
+        doc["network"]["ap"]["dhcp_range_start"] =
+            value(cfg.network.ap.dhcp_range_start.as_str());
+        doc["network"]["ap"]["dhcp_range_end"] = value(cfg.network.ap.dhcp_range_end.as_str());
+        doc["network"]["ap"]["password"] = value(cfg.network.ap.password.as_str());
+    }
+
+    // [[channels]] and [[network.known_networks]] are user-managed
     // and intentionally NOT updated here.
 }
 

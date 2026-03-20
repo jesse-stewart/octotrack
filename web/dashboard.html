@@ -110,10 +110,18 @@
         <button id="btn-start-rec" class="btn-rec" title="Start Recording">&#9679; Record</button>
       </div>
 
+      <!-- Volume -->
+      <div style="display:flex;align-items:center;gap:0.6rem;margin-bottom:0.5rem">
+        <span class="info-label" style="margin:0;white-space:nowrap">Vol</span>
+        <input type="range" id="vol-slider" min="0" max="100" value="80"
+               style="flex:1;accent-color:var(--accent);height:24px;cursor:pointer">
+        <span id="vol-value" style="font-size:0.85rem;min-width:2.5em;text-align:right">80%</span>
+      </div>
+
       <!-- Level meter -->
       <div class="level-wrap">
         <div class="info-label" style="margin-bottom:0.3rem">Input Levels</div>
-        <canvas class="meter" id="level-canvas" style="height:56px"></canvas>
+        <canvas class="meter" id="level-canvas"></canvas>
       </div>
     </div>
 
@@ -223,6 +231,8 @@
     const levelCanvas     = document.getElementById('level-canvas');
     const btnPlay         = document.getElementById('btn-play');
     const btnStartRec     = document.getElementById('btn-start-rec');
+    const volSlider       = document.getElementById('vol-slider');
+    const volValue        = document.getElementById('vol-value');
 
     // ── state ────────────────────────────────────────────────────────────────
 
@@ -276,7 +286,11 @@
     });
 
     onSseEvent('levels', (e) => {
-      renderLevels(levelCanvas, e.input.map(dbToNorm));
+      // Show whichever levels are active (input for rec/mon, output for playback)
+      const levels = (e.input && e.input.length > 0) ? e.input : e.output;
+      if (levels && levels.length > 0) {
+        renderLevels(levelCanvas, levels.map(dbToNorm));
+      }
     });
 
     // ── initial status load ──────────────────────────────────────────────────
@@ -287,6 +301,10 @@
       transportFile.textContent = s.current_track || '—';
       durLabel.textContent = fmtTime(s.duration_secs);
       posLabel.textContent = fmtTime(s.position_secs);
+      if (s.volume !== undefined) {
+        volSlider.value = s.volume;
+        volValue.textContent = s.volume + '%';
+      }
       if (s.recording && s.recording_path) {
         const short = s.recording_path.split('/').pop();
         recPathShort.textContent = short;
@@ -310,6 +328,17 @@
       apiFetch('POST', '/api/transport/next'));
     btnStartRec.addEventListener('click', () =>
       apiFetch('POST', '/api/recording/start'));
+
+    // Volume slider
+    let _volDebounce = null;
+    volSlider.addEventListener('input', () => {
+      const v = parseInt(volSlider.value);
+      volValue.textContent = v + '%';
+      clearTimeout(_volDebounce);
+      _volDebounce = setTimeout(() => {
+        apiFetch('POST', '/api/transport/volume', { volume: v });
+      }, 50);
+    });
 
     // ── system info ──────────────────────────────────────────────────────────
 
