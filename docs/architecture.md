@@ -8,6 +8,7 @@ graph TD
     main --> tui["Tui\nTerminal Lifecycle"]
     main --> events["EventHandler\nBackground Thread"]
     main --> sched["Scheduler\nBackground Thread"]
+    main --> web["web::spawn()\nActix-web Server"]
 
     app --> audio["AudioPlayer\nAudio I/O Orchestrator"]
     app --> cfg["Config\n~/.config/octotrack/\nconfig.toml"]
@@ -20,6 +21,13 @@ graph TD
     tui --> ui["ui.rs\nRatatui Layout & Widgets"]
     events -->|"mpsc Event"| main
     sched -->|"mpsc ScheduleMsg"| main
+
+    web -->|"Arc<RwLock<Config>>"| cfg
+    web -->|"mpsc AppCommand"| main
+    web -->|"Arc<RwLock<SharedStatus>>"| status["SharedStatus\nread-only snapshot"]
+    web --> sse["SseBroadcaster\ntokio broadcast channel"]
+    main -->|"writes each tick"| status
+    main -->|"broadcasts each tick"| sse
 ```
 
 ---
@@ -30,16 +38,18 @@ graph TD
 flowchart TD
     start([Start]) --> flags{"CLI flag?"}
     flags -->|"--reset"| reset["Clear passwords\nSave config"]
-    flags -->|"--set-password"| setup_forced["Interactive\npassword setup"]
+    flags -->|"--set-password"| setup_forced["Interactive setup\n(passwords + autostart)"]
+    flags -->|"--configure-autostart"| autostart["Configure autostart\n(systemd or .bashrc)"]
     reset --> exit_early([Exit])
     setup_forced --> exit_early
+    autostart --> exit_early
 
     flags -->|"normal start"| load_cfg["Load config"]
     load_cfg --> first_run{"needs_setup?\n(feature enabled + pw empty)"}
     first_run -->|"yes + no TTY"| err([Exit with error\n'run --set-password first'])
-    first_run -->|"yes + TTY"| setup["Interactive setup\n(opt-in per feature)"]
+    first_run -->|"yes + TTY"| setup["Interactive setup\n(passwords + autostart)"]
     setup --> init
-    first_run -->|"no"| init["Discover tracks\nStart scheduler"]
+    first_run -->|"no"| init["Discover tracks\nStart scheduler\nSpawn web server"]
     init --> loop_top["Loop iteration"]
     loop_top --> update["1. Update playback info\n(position, levels, rec elapsed)"]
     update --> render["2. Render TUI\n(ratatui → terminal)"]
@@ -126,6 +136,12 @@ graph TD
         stop_timer["Stop-timer Thread(s)\nsleep N sec → send Stop"]
     end
 
+    subgraph Web Server - Tokio Runtime
+        actix["Actix-web Workers\nHTTP request handlers"]
+        sse_clients["SSE Clients\ntokio broadcast receivers"]
+        peaks_workers["Peaks Workers\nspawn_blocking ffmpeg jobs"]
+    end
+
     evt_thread -->|"mpsc<Event>"| main_thread
     sched_thread -->|"mpsc<ScheduleMsg>"| main_thread
     sched_thread --> stop_timer
@@ -133,6 +149,11 @@ graph TD
 
     capture_thread -->|"Arc<Mutex<Vec<f32>>>"| main_thread
     analyze_play -->|"Arc<Mutex<Vec<f32>>>"| main_thread
+
+    actix -->|"mpsc<AppCommand>"| main_thread
+    main_thread -->|"Arc<RwLock<SharedStatus>>"| actix
+    main_thread -->|"broadcast<String>"| sse_clients
+    actix --> peaks_workers
 ```
 
 ---
@@ -195,9 +216,36 @@ classDiagram
         +min_free_bytes: u64
     }
 
+    class AppState {
+        +config: Arc~RwLock~Config~~
+        +status: Arc~RwLock~SharedStatus~~
+        +cmd_tx: mpsc~SyncSender~AppCommand~~
+        +broadcaster: SseBroadcaster
+        +peaks_semaphore: Arc~Semaphore~
+    }
+
+    class SharedStatus {
+        +playing: bool
+        +recording: bool
+        +monitoring: bool
+        +current_track: Option~String~
+        +position_secs: Option~f32~
+        +volume: u8
+        +input_levels: Vec~f32~
+        +track_list: Vec~TrackEntry~
+    }
+
+    class SseBroadcaster {
+        +send(OctoeventEvent)
+        +subscribe() Receiver
+    }
+
     App --> AudioPlayer
     App --> Config
     App --> ScheduleEntry
     AudioPlayer --> RecordingConfig
     ScheduleEntry --> CronExpr
+    AppState --> SharedStatus
+    AppState --> SseBroadcaster
+    AppState --> Config
 ```
