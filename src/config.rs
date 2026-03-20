@@ -613,8 +613,7 @@ fn update_doc(doc: &mut toml_edit::DocumentMut, cfg: &Config) {
         doc["network"]["ap"]["channel"] = value(cfg.network.ap.channel as i64);
         doc["network"]["ap"]["country_code"] = value(cfg.network.ap.country_code.as_str());
         doc["network"]["ap"]["address"] = value(cfg.network.ap.address.as_str());
-        doc["network"]["ap"]["dhcp_range_start"] =
-            value(cfg.network.ap.dhcp_range_start.as_str());
+        doc["network"]["ap"]["dhcp_range_start"] = value(cfg.network.ap.dhcp_range_start.as_str());
         doc["network"]["ap"]["dhcp_range_end"] = value(cfg.network.ap.dhcp_range_end.as_str());
         doc["network"]["ap"]["password"] = value(cfg.network.ap.password.as_str());
     }

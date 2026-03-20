@@ -404,7 +404,12 @@ fn build_shared_status(app: &App, cache: &mut TrackListCache) -> SharedStatus {
 }
 
 /// Update `SharedStatus` and push SSE events on each tick.
-fn update_shared(app: &App, status: &Arc<RwLock<SharedStatus>>, broadcaster: &SseBroadcaster, cache: &mut TrackListCache) {
+fn update_shared(
+    app: &App,
+    status: &Arc<RwLock<SharedStatus>>,
+    broadcaster: &SseBroadcaster,
+    cache: &mut TrackListCache,
+) {
     let new_status = build_shared_status(app, cache);
 
     {
@@ -772,7 +777,8 @@ fn main() -> AppResult<()> {
 
     // Set up shared state for the web server
     let mut initial_cache = TrackListCache::new();
-    let status: Arc<RwLock<SharedStatus>> = Arc::new(RwLock::new(build_shared_status(&app, &mut initial_cache)));
+    let status: Arc<RwLock<SharedStatus>> =
+        Arc::new(RwLock::new(build_shared_status(&app, &mut initial_cache)));
     let broadcaster = SseBroadcaster::new();
     let config = Arc::new(RwLock::new(app.config.clone()));
 

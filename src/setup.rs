@@ -177,9 +177,7 @@ fn install_systemd_service(
         println!("\n  Could not write {} (sudo required).", path);
         println!("  Install manually:\n");
         println!("  sudo tee {} << 'EOF'\n{}EOF", path, service);
-        println!(
-            "  sudo systemctl daemon-reload && sudo systemctl enable --now octotrack"
-        );
+        println!("  sudo systemctl daemon-reload && sudo systemctl enable --now octotrack");
     }
     Ok(())
 }
@@ -237,9 +235,7 @@ fn install_bashrc_autostart(
 
     if already_set {
         println!("  tty1 autologin already configured.");
-    } else if try_sudo_mkdir(autologin_dir)
-        && try_sudo_write(&autologin_conf, &autologin_content)
-    {
+    } else if try_sudo_mkdir(autologin_dir) && try_sudo_write(&autologin_conf, &autologin_content) {
         let _ = std::process::Command::new("sudo")
             .args(["systemctl", "daemon-reload"])
             .status();
