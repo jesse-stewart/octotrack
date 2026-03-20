@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.3] - 2026-03-20
+
+### Added
+- `--configure-autostart` CLI flag for interactive, idempotent autostart setup
+- Autostart configuration is now part of first-run setup and `--set-password`
+- Supports two autostart methods: systemd service (TFT and headless) and `.bashrc` autologin (HDMI)
+- API documentation (`docs/api.md`) covering all endpoints, request/response shapes, and SSE events
+- Pre-built binary download instructions in `docs/installation.md`
+
+### Fixed
+- Access point `enabled` flag and all other `[network.ap]` settings were not being saved to `config.toml` on web UI save — `update_doc` now writes the full `[network.ap]` section
+
+### Changed
+- `docs/installation.md` rewritten to lead with pre-built binary download, with build-from-source as a secondary option
+- `docs/raspberry-pi.md` updated to cover both systemd service (TFT and HDMI variants) and `.bashrc` autologin approaches
+- `docs/architecture.md` updated to include web server components, `SharedStatus`, `SseBroadcaster`, SSE threading, and `--configure-autostart` flag
+
 ## [0.2.2] - 2026-03-19
 
 ### Added

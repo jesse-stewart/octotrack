@@ -22,7 +22,7 @@ Not sure which Pi you have? Run `uname -m`:
 
 ```bash
 # Set these for your version and architecture
-VERSION="v0.2.2"
+VERSION="v0.2.3"
 ARCH="arm64"   # arm64 | armv7 | armv6 | x86_64
 
 curl -L -o octotrack \
