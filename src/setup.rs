@@ -186,6 +186,7 @@ fn install_systemd_service(
     let tty_section = match display {
         DisplayType::Tft => concat!(
             "ExecStartPre=/bin/sleep 5\n",
+            "ExecStartPre=+/bin/dmesg -n 1\n",
             "ExecStartPre=+/bin/chvt 1\n",
             "ExecStartPre=/usr/bin/clear\n",
             "StandardInput=tty\n",
@@ -198,6 +199,7 @@ fn install_systemd_service(
         ),
         DisplayType::Hdmi => concat!(
             "ExecStartPre=/bin/sleep 4\n",
+            "ExecStartPre=+/bin/dmesg -n 1\n",
             "ExecStartPre=+/bin/chvt 1\n",
             "ExecStartPre=/usr/bin/clear\n",
             "StandardInput=tty\n",
