@@ -197,8 +197,9 @@ fn install_systemd_service(
             "Environment=TERM=linux\n",
         ),
         DisplayType::Hdmi => concat!(
-            "ExecStartPre=/bin/sleep 2\n",
+            "ExecStartPre=/bin/sleep 4\n",
             "ExecStartPre=+/bin/chvt 1\n",
+            "ExecStartPre=/usr/bin/clear\n",
             "StandardInput=tty\n",
             "StandardOutput=tty\n",
             "StandardError=tty\n",
@@ -210,10 +211,16 @@ fn install_systemd_service(
         DisplayType::Headless => "StandardOutput=journal\nStandardError=journal\n",
     };
 
+    let conflicts = match display {
+        DisplayType::Headless => "",
+        _ => "Conflicts=getty@tty1.service\nAfter=getty@tty1.service\n",
+    };
+
     let service = format!(
         "[Unit]\n\
          Description=Octotrack Multi-Channel Audio Player\n\
          After=sound.target multi-user.target\n\
+         {conflicts}\
          \n\
          [Service]\n\
          Type=simple\n\
