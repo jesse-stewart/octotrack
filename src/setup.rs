@@ -239,6 +239,9 @@ fn install_systemd_service(
 
     let path = "/etc/systemd/system/octotrack.service";
     if try_sudo_write(path, &service) {
+        // Suppress systemd's own late boot console messages (e.g. "Completed
+        // socket interaction for boot stage final") that bleed into the TUI.
+        patch_systemd_log_level();
         let _ = std::process::Command::new("sudo")
             .args(["systemctl", "daemon-reload"])
             .status();
@@ -254,6 +257,45 @@ fn install_systemd_service(
         println!("  sudo systemctl daemon-reload && sudo systemctl enable --now octotrack");
     }
     Ok(())
+}
+
+/// Set systemd's console log level to warning so late boot messages don't
+/// bleed into the TUI. Uses `sed` to update the existing `LogLevel=` line
+/// if present, otherwise appends it under `[Manager]`.
+fn patch_systemd_log_level() {
+    let conf_path = "/etc/systemd/system.conf";
+    let Ok(content) = std::fs::read_to_string(conf_path) else {
+        return;
+    };
+
+    let already_set = content
+        .lines()
+        .any(|l| l.trim() == "LogLevel=warning");
+
+    if already_set {
+        return;
+    }
+
+    // Replace any existing LogLevel= line (commented or not), or append.
+    let new_content = if content.lines().any(|l| l.trim_start_matches('#').trim().starts_with("LogLevel=")) {
+        content
+            .lines()
+            .map(|l| {
+                if l.trim_start_matches('#').trim().starts_with("LogLevel=") {
+                    "LogLevel=warning".to_string()
+                } else {
+                    l.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        format!("{}\nLogLevel=warning\n", content.trim_end())
+    };
+
+    if try_sudo_write(conf_path, &new_content) {
+        println!("  Set systemd LogLevel=warning in {}.", conf_path);
+    }
 }
 
 fn install_bashrc_autostart(
