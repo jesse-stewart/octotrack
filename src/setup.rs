@@ -230,6 +230,7 @@ fn install_systemd_service(
          WorkingDirectory={workdir}\n\
          {tty_section}\
          ExecStart={exe}\n\
+         AmbientCapabilities=CAP_SYSLOG\n\
          Restart=always\n\
          RestartSec=3\n\
          TimeoutStopSec=10\n\

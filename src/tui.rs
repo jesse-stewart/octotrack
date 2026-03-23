@@ -30,6 +30,11 @@ impl<B: Backend> Tui<B> {
     ///
     /// It enables the raw mode and sets terminal properties.
     pub fn init(&mut self) -> AppResult<()> {
+        // Suppress kernel messages from appearing on the TTY while the TUI is running.
+        // Requires CAP_SYSLOG (set via AmbientCapabilities in the systemd service).
+        // Silently ignored if the capability is not available.
+        let _ = std::fs::write("/proc/sys/kernel/printk", "1\n");
+
         terminal::enable_raw_mode()?;
         crossterm::execute!(io::stderr(), EnterAlternateScreen, EnableMouseCapture)?;
 
@@ -71,6 +76,8 @@ impl<B: Backend> Tui<B> {
     pub fn exit(&mut self) -> AppResult<()> {
         Self::reset()?;
         self.terminal.show_cursor()?;
+        // Restore default kernel console log level.
+        let _ = std::fs::write("/proc/sys/kernel/printk", "4\n");
         Ok(())
     }
 }
