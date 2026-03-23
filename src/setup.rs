@@ -259,43 +259,49 @@ fn install_systemd_service(
     Ok(())
 }
 
-/// Set systemd's console log level to warning so late boot messages don't
-/// bleed into the TUI. Uses `sed` to update the existing `LogLevel=` line
-/// if present, otherwise appends it under `[Manager]`.
+/// Suppress systemd console messages that bleed into the TUI:
+///   LogLevel=warning  — silences journal noise
+///   ShowStatus=error  — silences "Completed boot stage" status lines
 fn patch_systemd_log_level() {
     let conf_path = "/etc/systemd/system.conf";
     let Ok(content) = std::fs::read_to_string(conf_path) else {
         return;
     };
 
-    let already_set = content.lines().any(|l| l.trim() == "LogLevel=warning");
+    let needs_loglevel = !content.lines().any(|l| l.trim() == "LogLevel=warning");
+    let needs_showstatus = !content.lines().any(|l| l.trim() == "ShowStatus=error");
 
-    if already_set {
+    if !needs_loglevel && !needs_showstatus {
         return;
     }
 
-    // Replace any existing LogLevel= line (commented or not), or append.
-    let new_content = if content
+    let new_content = content
         .lines()
-        .any(|l| l.trim_start_matches('#').trim().starts_with("LogLevel="))
-    {
-        content
-            .lines()
-            .map(|l| {
-                if l.trim_start_matches('#').trim().starts_with("LogLevel=") {
-                    "LogLevel=warning".to_string()
-                } else {
-                    l.to_string()
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    } else {
-        format!("{}\nLogLevel=warning\n", content.trim_end())
-    };
+        .map(|l| {
+            let stripped = l.trim_start_matches('#').trim();
+            if needs_loglevel && stripped.starts_with("LogLevel=") {
+                "LogLevel=warning".to_string()
+            } else if needs_showstatus && stripped.starts_with("ShowStatus=") {
+                "ShowStatus=error".to_string()
+            } else {
+                l.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
 
-    if try_sudo_write(conf_path, &new_content) {
-        println!("  Set systemd LogLevel=warning in {}.", conf_path);
+    // Append any settings that had no existing line to replace.
+    let mut appended = new_content.trim_end().to_string();
+    if needs_loglevel && !appended.lines().any(|l| l.trim() == "LogLevel=warning") {
+        appended.push_str("\nLogLevel=warning");
+    }
+    if needs_showstatus && !appended.lines().any(|l| l.trim() == "ShowStatus=error") {
+        appended.push_str("\nShowStatus=error");
+    }
+    appended.push('\n');
+
+    if try_sudo_write(conf_path, &appended) {
+        println!("  Suppressed systemd console messages in {}.", conf_path);
     }
 }
 
