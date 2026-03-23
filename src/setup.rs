@@ -268,16 +268,17 @@ fn patch_systemd_log_level() {
         return;
     };
 
-    let already_set = content
-        .lines()
-        .any(|l| l.trim() == "LogLevel=warning");
+    let already_set = content.lines().any(|l| l.trim() == "LogLevel=warning");
 
     if already_set {
         return;
     }
 
     // Replace any existing LogLevel= line (commented or not), or append.
-    let new_content = if content.lines().any(|l| l.trim_start_matches('#').trim().starts_with("LogLevel=")) {
+    let new_content = if content
+        .lines()
+        .any(|l| l.trim_start_matches('#').trim().starts_with("LogLevel="))
+    {
         content
             .lines()
             .map(|l| {
