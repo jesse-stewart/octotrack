@@ -121,9 +121,60 @@ pub fn configure_autostart() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     match method {
-        AutostartMethod::Systemd => install_systemd_service(&release_exe, &workdir, &user, display),
-        AutostartMethod::Bashrc => install_bashrc_autostart(&release_exe, display),
+        AutostartMethod::Systemd => {
+            remove_bashrc_autostart();
+            install_systemd_service(&release_exe, &workdir, &user, display)
+        }
+        AutostartMethod::Bashrc => {
+            remove_systemd_service();
+            install_bashrc_autostart(&release_exe, display)
+        }
     }
+}
+
+fn remove_systemd_service() {
+    let path = "/etc/systemd/system/octotrack.service";
+    if !std::path::Path::new(path).exists() {
+        return;
+    }
+    let _ = std::process::Command::new("sudo")
+        .args(["systemctl", "disable", "--now", "octotrack"])
+        .status();
+    let _ = std::process::Command::new("sudo")
+        .args(["rm", "-f", path])
+        .status();
+    let _ = std::process::Command::new("sudo")
+        .args(["systemctl", "daemon-reload"])
+        .status();
+    println!("  Removed existing systemd service.");
+}
+
+fn remove_bashrc_autostart() {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+    let bashrc_path = format!("{}/.bashrc", home);
+    let existing = match std::fs::read_to_string(&bashrc_path) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    if !existing.contains(BASHRC_START) {
+        return;
+    }
+    let new_content = if let Some(start) = existing.find(BASHRC_START) {
+        let end = existing
+            .find(BASHRC_END)
+            .map(|i| i + BASHRC_END.len())
+            .unwrap_or(start);
+        let end = if existing[end..].starts_with('\n') {
+            end + 1
+        } else {
+            end
+        };
+        format!("{}{}", &existing[..start], &existing[end..])
+    } else {
+        existing
+    };
+    let _ = std::fs::write(&bashrc_path, new_content);
+    println!("  Removed existing .bashrc autostart block.");
 }
 
 fn install_systemd_service(
