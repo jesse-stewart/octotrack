@@ -29,6 +29,7 @@ enum AutostartMethod {
 enum DisplayType {
     Tft,
     Hdmi,
+    Headless,
 }
 
 /// Interactive, idempotent autostart configuration.
@@ -102,18 +103,20 @@ pub fn configure_autostart() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     println!("\n  Display type:");
-    println!("    1 — TFT / framebuffer on tty1");
-    println!("    2 — HDMI or headless");
+    println!("    1 — TFT / framebuffer (tty1, 5s boot delay)");
+    println!("    2 — HDMI monitor (tty1)");
+    println!("    3 — Headless / web only (no TUI)");
 
     let display = loop {
-        print!("\n  Choice [1/2]: ");
+        print!("\n  Choice [1/2/3]: ");
         io::stdout().flush()?;
         let mut line = String::new();
         io::stdin().read_line(&mut line)?;
         match line.trim() {
             "1" => break DisplayType::Tft,
             "2" | "" => break DisplayType::Hdmi,
-            _ => eprintln!("  Enter 1 or 2."),
+            "3" => break DisplayType::Headless,
+            _ => eprintln!("  Enter 1, 2, or 3."),
         }
     };
 
@@ -142,7 +145,18 @@ fn install_systemd_service(
             "TTYVHangup=yes\n",
             "Environment=TERM=linux\n",
         ),
-        DisplayType::Hdmi => "StandardOutput=journal\nStandardError=journal\n",
+        DisplayType::Hdmi => concat!(
+            "ExecStartPre=/bin/sleep 2\n",
+            "ExecStartPre=/bin/chvt 1\n",
+            "StandardInput=tty\n",
+            "StandardOutput=tty\n",
+            "StandardError=tty\n",
+            "TTYPath=/dev/tty1\n",
+            "TTYReset=yes\n",
+            "TTYVHangup=yes\n",
+            "Environment=TERM=linux\n",
+        ),
+        DisplayType::Headless => "StandardOutput=journal\nStandardError=journal\n",
     };
 
     let service = format!(
@@ -158,6 +172,7 @@ fn install_systemd_service(
          ExecStart={exe}\n\
          Restart=always\n\
          RestartSec=3\n\
+         TimeoutStopSec=10\n\
          \n\
          [Install]\n\
          WantedBy=multi-user.target\n"
@@ -187,8 +202,8 @@ fn install_bashrc_autostart(
     display: DisplayType,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let run_cmd = match display {
-        DisplayType::Tft => exe.to_string(),
-        DisplayType::Hdmi => format!("{} --headless", exe),
+        DisplayType::Tft | DisplayType::Hdmi => exe.to_string(),
+        DisplayType::Headless => format!("{} --headless", exe),
     };
 
     let block = format!(

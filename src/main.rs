@@ -13,8 +13,15 @@ use ratatui::Terminal;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
+
+static SHUTDOWN: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn on_sigterm(_: libc::c_int) {
+    SHUTDOWN.store(true, Ordering::Relaxed);
+}
 
 #[derive(Debug, Clone, PartialEq)]
 enum RunMode {
@@ -502,7 +509,7 @@ fn run_tui(
     let mut needs_redraw = true;
 
     // Start the main loop.
-    while app.running {
+    while app.running && !SHUTDOWN.load(Ordering::Relaxed) {
         // Drain web commands
         drain_commands(&mut app, &cmd_rx);
 
@@ -547,6 +554,12 @@ fn run_headless(
 ) {
     let mut track_cache = TrackListCache::new();
     loop {
+        if SHUTDOWN.load(Ordering::Relaxed) {
+            let mut app = app.lock().unwrap();
+            let _ = app.audio_player.stop_recording();
+            let _ = app.audio_player.stop();
+            break;
+        }
         {
             let mut app = app.lock().unwrap();
             drain_commands(&mut app, &cmd_rx);
@@ -663,6 +676,11 @@ fn start_access_point(config: &Config) -> Result<(), Box<dyn std::error::Error>>
 }
 
 fn main() -> AppResult<()> {
+    // Install SIGTERM handler so systemd shutdown doesn't hang.
+    unsafe {
+        libc::signal(libc::SIGTERM, on_sigterm as *const () as libc::sighandler_t);
+    }
+
     let cli = Cli::parse();
     let mode = detect_mode(&cli);
 

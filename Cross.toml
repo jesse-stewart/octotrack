@@ -3,21 +3,32 @@
 #
 # Each [target.*] section installs libasound2-dev for the target architecture
 # inside the cross Docker container before cargo build runs.
+#
+# The fix_apt_sources.py script restricts the default apt sources to amd64
+# only (required on Ubuntu 22.04+ cross images that use DEB822 format).
+# We then add the Ubuntu ports mirror for the foreign architecture so that
+# arm64/armhf packages are available.
 
 [target.aarch64-unknown-linux-gnu]
 pre-build = [
+    "python3 .github/scripts/fix_apt_sources.py 2>/dev/null || true",
+    "CODENAME=$(. /etc/os-release && echo ${UBUNTU_CODENAME:-${VERSION_CODENAME:-focal}}) && echo \"deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports $CODENAME main restricted universe multiverse\" > /etc/apt/sources.list.d/arm64-ports.list",
     "dpkg --add-architecture arm64",
-    "apt-get update && apt-get install -y libasound2-dev:arm64",
+    "apt-get update && apt-get install -y --no-install-recommends libasound2-dev:arm64",
 ]
 
 [target.armv7-unknown-linux-gnueabihf]
 pre-build = [
+    "python3 .github/scripts/fix_apt_sources.py 2>/dev/null || true",
+    "CODENAME=$(. /etc/os-release && echo ${UBUNTU_CODENAME:-${VERSION_CODENAME:-focal}}) && echo \"deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports $CODENAME main restricted universe multiverse\" > /etc/apt/sources.list.d/armhf-ports.list",
     "dpkg --add-architecture armhf",
-    "apt-get update && apt-get install -y libasound2-dev:armhf",
+    "apt-get update && apt-get install -y --no-install-recommends libasound2-dev:armhf",
 ]
 
 [target.arm-unknown-linux-gnueabihf]
 pre-build = [
+    "python3 .github/scripts/fix_apt_sources.py 2>/dev/null || true",
+    "CODENAME=$(. /etc/os-release && echo ${UBUNTU_CODENAME:-${VERSION_CODENAME:-focal}}) && echo \"deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports $CODENAME main restricted universe multiverse\" > /etc/apt/sources.list.d/armhf-ports.list",
     "dpkg --add-architecture armhf",
-    "apt-get update && apt-get install -y libasound2-dev:armhf",
+    "apt-get update && apt-get install -y --no-install-recommends libasound2-dev:armhf",
 ]
