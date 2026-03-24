@@ -385,21 +385,24 @@ impl App {
                 let _ = self.stop_monitoring();
             }
             let current_track = self.track_list[self.current_track_index].clone();
-            self.audio_player
-                .play(
-                    &current_track,
-                    self.track_channel_count,
-                    self.playback_channel_count,
-                    self.volume,
-                    self.max_volume,
-                    &self.eq_bands,
-                    self.eq_enabled,
-                    &self.playback_device,
-                )
-                .unwrap();
-            self.is_playing = true;
+            match self.audio_player.play(
+                &current_track,
+                self.track_channel_count,
+                self.playback_channel_count,
+                self.volume,
+                self.max_volume,
+                &self.eq_bands,
+                self.eq_enabled,
+                &self.playback_device,
+            ) {
+                Ok(_) => self.is_playing = true,
+                Err(e) => {
+                    eprintln!("play error: {e}");
+                }
+            }
         }
     }
+
 
     pub fn get_metadata(&mut self) {
         let track_path = &self.track_list[self.current_track_index];
