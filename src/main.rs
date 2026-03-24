@@ -790,8 +790,12 @@ fn main() -> AppResult<()> {
         app.schedule_rx = Some(rx);
     }
 
-    // Find tracks directory (USB first, then local fallback)
-    let tracks_dir = find_tracks_directory();
+    // Find tracks directory: explicit config > USB > local fallback
+    let tracks_dir = if !app.config.storage.tracks_dir.is_empty() {
+        app.config.storage.tracks_dir.clone()
+    } else {
+        find_tracks_directory()
+    };
     app.load_tracks(&tracks_dir).unwrap();
 
     // Get initial track metadata
