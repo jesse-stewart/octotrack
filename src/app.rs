@@ -811,7 +811,7 @@ impl App {
         self.mon_output_device = cfg.monitoring.output_device.clone();
 
         // [tools]
-        self.audio_player.backend = PlayerBackend::from_str(&cfg.tools.player);
+        self.audio_player.backend = PlayerBackend::from_name(&cfg.tools.player);
         self.audio_player.player_cmd = if cfg.tools.player == "mpv" {
             cfg.tools.mpv.clone()
         } else {

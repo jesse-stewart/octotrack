@@ -14,7 +14,7 @@ pub enum PlayerBackend {
 }
 
 impl PlayerBackend {
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_name(s: &str) -> Self {
         if s == "mpv" {
             PlayerBackend::Mpv
         } else {
@@ -381,7 +381,7 @@ impl AudioPlayer {
     }
 
     fn start_audio_analysis(&mut self, track_path: &PathBuf, channel_count: u32) -> io::Result<()> {
-        let mut cmd = Command::new(&self.ffmpeg_cmd.clone());
+        let mut cmd = Command::new(self.ffmpeg_cmd.clone());
 
         // Use -re for real-time processing
         cmd.arg("-re");
@@ -673,7 +673,7 @@ impl AudioPlayer {
         }
 
         // Build ffmpeg command to merge multiple audio files
-        let mut ffmpeg_cmd = Command::new(&self.ffmpeg_cmd.clone());
+        let mut ffmpeg_cmd = Command::new(self.ffmpeg_cmd.clone());
 
         // Add all input files
         for file in &audio_files {
