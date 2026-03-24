@@ -112,7 +112,9 @@ log_file = ""
 max_size_mb = 10
 
 [tools]
+player = "mplayer"
 mplayer = "mplayer"
+mpv = "mpv"
 ffmpeg = "ffmpeg"
 nmcli = "nmcli"
 ```
@@ -229,7 +231,9 @@ Run `octotrack --test-eink` to fill the display all-black then all-white and exi
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `mplayer` | `"mplayer"` | Path or command name for mplayer. Override if installed to a non-standard location. |
+| `player` | `"mplayer"` | Audio player backend: `"mplayer"` or `"mpv"`. Use `"mpv"` on ARMv6 (Pi Zero/Pi 1) where the `mplayer` Debian package is ARMv7-only. |
+| `mplayer` | `"mplayer"` | Path or command name for mplayer. Used when `player = "mplayer"`. |
+| `mpv` | `"mpv"` | Path or command name for mpv. Used when `player = "mpv"`. |
 | `ffmpeg` | `"ffmpeg"` | Path or command name for ffmpeg. |
 | `nmcli` | `"nmcli"` | Path or command name for nmcli (used for network management). |
 

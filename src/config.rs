@@ -416,7 +416,10 @@ impl Default for WebConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ToolsConfig {
+    /// `"mplayer"` or `"mpv"`
+    pub player: String,
     pub mplayer: String,
+    pub mpv: String,
     pub ffmpeg: String,
     pub nmcli: String,
 }
@@ -424,7 +427,9 @@ pub struct ToolsConfig {
 impl Default for ToolsConfig {
     fn default() -> Self {
         Self {
+            player: "mplayer".to_string(),
             mplayer: "mplayer".to_string(),
+            mpv: "mpv".to_string(),
             ffmpeg: "ffmpeg".to_string(),
             nmcli: "nmcli".to_string(),
         }
@@ -636,7 +641,9 @@ fn update_doc(doc: &mut toml_edit::DocumentMut, cfg: &Config) {
     if !doc.contains_key("tools") {
         doc.insert("tools", Item::Table(Table::new()));
     }
+    doc["tools"]["player"] = value(cfg.tools.player.as_str());
     doc["tools"]["mplayer"] = value(cfg.tools.mplayer.as_str());
+    doc["tools"]["mpv"] = value(cfg.tools.mpv.as_str());
     doc["tools"]["ffmpeg"] = value(cfg.tools.ffmpeg.as_str());
     doc["tools"]["nmcli"] = value(cfg.tools.nmcli.as_str());
 

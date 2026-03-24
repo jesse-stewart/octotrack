@@ -1,10 +1,27 @@
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlayerBackend {
+    Mplayer,
+    Mpv,
+}
+
+impl PlayerBackend {
+    pub fn from_str(s: &str) -> Self {
+        if s == "mpv" {
+            PlayerBackend::Mpv
+        } else {
+            PlayerBackend::Mplayer
+        }
+    }
+}
 
 #[cfg(unix)]
 extern crate libc;
@@ -224,10 +241,15 @@ pub struct AudioPlayer {
     ffmpeg_process: Option<Child>,
     control_fifo: Option<File>,
     fifo_path: PathBuf,
+    socket_path: PathBuf,
     analysis_process: Option<Child>,
     start_time: Option<Instant>,
     channel_levels: Arc<Mutex<Vec<f32>>>,
     current_volume: u8,
+    pub backend: PlayerBackend,
+    pub player_cmd: String,
+    pub mpv_cmd: String,
+    pub ffmpeg_cmd: String,
     // Unified capture: one arecord serves both recording and monitoring.
     capture_arecord: Option<Child>,
     capture_aplay: Option<Child>,
@@ -246,16 +268,21 @@ impl Default for AudioPlayer {
 
 impl AudioPlayer {
     pub fn new() -> Self {
-        let fifo_path = std::env::temp_dir().join("octotrack_mplayer.fifo");
+        let tmp = std::env::temp_dir();
         AudioPlayer {
             process: None,
             ffmpeg_process: None,
             control_fifo: None,
-            fifo_path,
+            fifo_path: tmp.join("octotrack_mplayer.fifo"),
+            socket_path: tmp.join("octotrack_mpv.sock"),
             analysis_process: None,
             start_time: None,
             channel_levels: Arc::new(Mutex::new(Vec::new())),
             current_volume: 100,
+            backend: PlayerBackend::Mplayer,
+            player_cmd: "mplayer".to_string(),
+            mpv_cmd: "mpv".to_string(),
+            ffmpeg_cmd: "ffmpeg".to_string(),
             capture_arecord: None,
             capture_aplay: None,
             capture_thread: None,
@@ -354,7 +381,7 @@ impl AudioPlayer {
     }
 
     fn start_audio_analysis(&mut self, track_path: &PathBuf, channel_count: u32) -> io::Result<()> {
-        let mut cmd = Command::new("ffmpeg");
+        let mut cmd = Command::new(&self.ffmpeg_cmd.clone());
 
         // Use -re for real-time processing
         cmd.arg("-re");
@@ -517,47 +544,78 @@ impl AudioPlayer {
             let _ = repair_wav_header(file_path);
         }
 
-        // Use mplayer's built-in volume control with slave mode for dynamic control
-        let mut cmd = Command::new("mplayer");
-        cmd.arg("-slave")
-            .arg("-quiet")
-            .arg("-input")
-            .arg(format!("file={}", self.fifo_path.display()))
-            .arg("-channels")
-            .arg(output_channel_count.to_string())
-            .arg("-softvol")
-            .arg("-softvol-max")
-            .arg(max_volume.to_string())
-            .arg("-volume")
-            .arg(volume.to_string());
+        self.control_fifo = None;
 
-        // Add EQ filter if enabled
-        if eq_enabled {
-            cmd.arg("-af").arg(Self::eq_filter_string(eq_bands));
-        }
-
-        let process = cmd
-            .arg("-ao")
-            .arg(format!(
-                "alsa:device={}",
-                playback_device.replace("hw:", "plughw=").replace(',', ".")
-            ))
-            .arg(file_path)
-            .stdin(Stdio::null())
-            .stdout(log_stdio())
-            .stderr(log_stdio())
-            .spawn()?;
+        let process = match self.backend {
+            PlayerBackend::Mplayer => {
+                let mut cmd = Command::new(&self.player_cmd);
+                cmd.arg("-slave")
+                    .arg("-quiet")
+                    .arg("-input")
+                    .arg(format!("file={}", self.fifo_path.display()))
+                    .arg("-channels")
+                    .arg(output_channel_count.to_string())
+                    .arg("-softvol")
+                    .arg("-softvol-max")
+                    .arg(max_volume.to_string())
+                    .arg("-volume")
+                    .arg(volume.to_string());
+                if eq_enabled {
+                    cmd.arg("-af").arg(Self::eq_filter_string(eq_bands));
+                }
+                cmd.arg("-ao")
+                    .arg(format!(
+                        "alsa:device={}",
+                        playback_device.replace("hw:", "plughw=").replace(',', ".")
+                    ))
+                    .arg(file_path)
+                    .stdin(Stdio::null())
+                    .stdout(log_stdio())
+                    .stderr(log_stdio())
+                    .spawn()?
+            }
+            PlayerBackend::Mpv => {
+                let _ = std::fs::remove_file(&self.socket_path);
+                let mut cmd = Command::new(&self.mpv_cmd);
+                cmd.arg(format!("--input-ipc-server={}", self.socket_path.display()))
+                    .arg("--really-quiet")
+                    .arg("--no-audio-display")
+                    .arg("--ao=alsa")
+                    .arg(format!(
+                        "--audio-device=alsa/{}",
+                        playback_device.replace("hw:", "plughw:")
+                    ))
+                    .arg(format!("--audio-channels={}", output_channel_count))
+                    .arg(format!("--volume={}", volume));
+                if max_volume > 100 {
+                    cmd.arg(format!("--volume-max={}", max_volume));
+                }
+                if eq_enabled {
+                    cmd.arg(format!("--af=equalizer={}", Self::eq_values(eq_bands)));
+                }
+                cmd.arg(file_path)
+                    .stdin(Stdio::null())
+                    .stdout(log_stdio())
+                    .stderr(log_stdio())
+                    .spawn()?
+            }
+        };
 
         self.process = Some(process);
-        log("play_single_file: mplayer spawned");
+        log("play_single_file: player spawned");
 
-        // Give mplayer a moment to open the FIFO
         std::thread::sleep(std::time::Duration::from_millis(100));
 
-        // Open FIFO for writing
-        self.control_fifo = Some(OpenOptions::new().write(true).open(&self.fifo_path)?);
+        match self.backend {
+            PlayerBackend::Mplayer => {
+                self.control_fifo = Some(OpenOptions::new().write(true).open(&self.fifo_path)?);
+                log("play_single_file: fifo opened, playback started");
+            }
+            PlayerBackend::Mpv => {
+                log("play_single_file: mpv started, ipc socket will be ready shortly");
+            }
+        }
 
-        log("play_single_file: fifo opened, playback started");
         Ok(())
     }
 
@@ -615,7 +673,7 @@ impl AudioPlayer {
         }
 
         // Build ffmpeg command to merge multiple audio files
-        let mut ffmpeg_cmd = Command::new("ffmpeg");
+        let mut ffmpeg_cmd = Command::new(&self.ffmpeg_cmd.clone());
 
         // Add all input files
         for file in &audio_files {
@@ -639,91 +697,154 @@ impl AudioPlayer {
             .arg("wav")
             .arg("-");
 
-        // Pipe ffmpeg output to mplayer with volume control
+        // Pipe ffmpeg output to the player
         let mut ffmpeg_output = ffmpeg_cmd
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()?;
 
-        let mplayer_stdin = ffmpeg_output
+        let player_stdin = ffmpeg_output
             .stdout
             .take()
             .ok_or_else(|| io::Error::other("Failed to capture ffmpeg stdout"))?;
 
-        let mut mplayer_cmd = Command::new("mplayer");
-        mplayer_cmd
-            .arg("-slave")
-            .arg("-quiet")
-            .arg("-input")
-            .arg(format!("file={}", self.fifo_path.display()))
-            .arg("-channels")
-            .arg(output_channel_count.to_string())
-            .arg("-softvol")
-            .arg("-softvol-max")
-            .arg(max_volume.to_string())
-            .arg("-volume")
-            .arg(volume.to_string());
+        self.control_fifo = None;
 
-        if eq_enabled {
-            mplayer_cmd.arg("-af").arg(Self::eq_filter_string(eq_bands));
-        }
-
-        let mplayer_process = mplayer_cmd
-            .arg("-ao")
-            .arg(format!(
-                "alsa:device={}",
-                playback_device.replace("hw:", "plughw=").replace(',', ".")
-            ))
-            .arg("-")
-            .stdin(mplayer_stdin)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()?;
+        let player_process = match self.backend {
+            PlayerBackend::Mplayer => {
+                let mut cmd = Command::new(&self.player_cmd);
+                cmd.arg("-slave")
+                    .arg("-quiet")
+                    .arg("-input")
+                    .arg(format!("file={}", self.fifo_path.display()))
+                    .arg("-channels")
+                    .arg(output_channel_count.to_string())
+                    .arg("-softvol")
+                    .arg("-softvol-max")
+                    .arg(max_volume.to_string())
+                    .arg("-volume")
+                    .arg(volume.to_string());
+                if eq_enabled {
+                    cmd.arg("-af").arg(Self::eq_filter_string(eq_bands));
+                }
+                cmd.arg("-ao")
+                    .arg(format!(
+                        "alsa:device={}",
+                        playback_device.replace("hw:", "plughw=").replace(',', ".")
+                    ))
+                    .arg("-")
+                    .stdin(player_stdin)
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()?
+            }
+            PlayerBackend::Mpv => {
+                let _ = std::fs::remove_file(&self.socket_path);
+                let mut cmd = Command::new(&self.mpv_cmd);
+                cmd.arg(format!("--input-ipc-server={}", self.socket_path.display()))
+                    .arg("--really-quiet")
+                    .arg("--no-audio-display")
+                    .arg("--ao=alsa")
+                    .arg(format!(
+                        "--audio-device=alsa/{}",
+                        playback_device.replace("hw:", "plughw:")
+                    ))
+                    .arg(format!("--audio-channels={}", output_channel_count))
+                    .arg(format!("--volume={}", volume));
+                if max_volume > 100 {
+                    cmd.arg(format!("--volume-max={}", max_volume));
+                }
+                if eq_enabled {
+                    cmd.arg(format!("--af=equalizer={}", Self::eq_values(eq_bands)));
+                }
+                cmd.arg("--demuxer-lavf-format=wav")
+                    .arg("-")
+                    .stdin(player_stdin)
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()?
+            }
+        };
 
         self.ffmpeg_process = Some(ffmpeg_output);
-        self.process = Some(mplayer_process);
+        self.process = Some(player_process);
 
-        // Give mplayer a moment to open the FIFO
         std::thread::sleep(std::time::Duration::from_millis(100));
 
-        // Open FIFO for writing
-        self.control_fifo = Some(OpenOptions::new().write(true).open(&self.fifo_path)?);
+        if self.backend == PlayerBackend::Mplayer {
+            self.control_fifo = Some(OpenOptions::new().write(true).open(&self.fifo_path)?);
+        }
 
         Ok(())
     }
 
+    fn eq_values(bands: &[i8; 10]) -> String {
+        bands
+            .iter()
+            .map(|b| b.to_string())
+            .collect::<Vec<_>>()
+            .join(":")
+    }
+
     fn eq_filter_string(bands: &[i8; 10]) -> String {
-        let values: Vec<String> = bands.iter().map(|b| b.to_string()).collect();
-        format!("equalizer={}", values.join(":"))
+        format!("equalizer={}", Self::eq_values(bands))
+    }
+
+    fn mpv_send(&self, json: &str) -> io::Result<()> {
+        let mut stream = UnixStream::connect(&self.socket_path)?;
+        writeln!(stream, "{}", json)?;
+        Ok(())
     }
 
     /// Update EQ band values smoothly during playback
     pub fn update_eq_bands(&mut self, bands: &[i8; 10]) -> io::Result<()> {
-        if let Some(fifo) = &mut self.control_fifo {
-            let values: Vec<String> = bands.iter().map(|b| b.to_string()).collect();
-            writeln!(
-                fifo,
-                "pausing_keep_force af_cmdline equalizer {}",
-                values.join(":")
-            )?;
-            fifo.flush()?;
+        match self.backend {
+            PlayerBackend::Mplayer => {
+                if let Some(fifo) = &mut self.control_fifo {
+                    writeln!(
+                        fifo,
+                        "pausing_keep_force af_cmdline equalizer {}",
+                        Self::eq_values(bands)
+                    )?;
+                    fifo.flush()?;
+                }
+            }
+            PlayerBackend::Mpv => {
+                let _ = self.mpv_send(&format!(
+                    r#"{{"command":["af","set","equalizer={}"]}}"#,
+                    Self::eq_values(bands)
+                ));
+            }
         }
         Ok(())
     }
 
     /// Toggle EQ on/off (for bypass - requires delete+add)
     pub fn set_eq_enabled(&mut self, bands: &[i8; 10], enabled: bool) -> io::Result<()> {
-        if let Some(fifo) = &mut self.control_fifo {
-            writeln!(fifo, "pausing_keep_force af_del equalizer")?;
-            fifo.flush()?;
-
-            if enabled {
-                writeln!(
-                    fifo,
-                    "pausing_keep_force af_add {}",
-                    Self::eq_filter_string(bands)
-                )?;
-                fifo.flush()?;
+        match self.backend {
+            PlayerBackend::Mplayer => {
+                if let Some(fifo) = &mut self.control_fifo {
+                    writeln!(fifo, "pausing_keep_force af_del equalizer")?;
+                    fifo.flush()?;
+                    if enabled {
+                        writeln!(
+                            fifo,
+                            "pausing_keep_force af_add {}",
+                            Self::eq_filter_string(bands)
+                        )?;
+                        fifo.flush()?;
+                    }
+                }
+            }
+            PlayerBackend::Mpv => {
+                if enabled {
+                    let _ = self.mpv_send(&format!(
+                        r#"{{"command":["af","set","equalizer={}"]}}"#,
+                        Self::eq_values(bands)
+                    ));
+                } else {
+                    let _ = self.mpv_send(r#"{"command":["af","set",""]}"#);
+                }
             }
         }
         Ok(())
@@ -742,10 +863,11 @@ impl AudioPlayer {
             analysis_process.kill()?;
             analysis_process.wait()?;
         }
-        // Close FIFO and clean up
+        // Close FIFO/socket and clean up
         self.control_fifo = None;
         self.start_time = None;
         let _ = std::fs::remove_file(&self.fifo_path);
+        let _ = std::fs::remove_file(&self.socket_path);
         Ok(())
     }
 
@@ -771,11 +893,19 @@ impl AudioPlayer {
 
     pub fn set_volume(&mut self, volume: u8) -> io::Result<()> {
         self.current_volume = volume;
-        if let Some(fifo) = &mut self.control_fifo {
-            // Send mplayer slave command to set absolute volume
-            // Use pausing_keep_force to ensure command works during playback
-            writeln!(fifo, "pausing_keep_force volume {} 1", volume)?;
-            fifo.flush()?;
+        match self.backend {
+            PlayerBackend::Mplayer => {
+                if let Some(fifo) = &mut self.control_fifo {
+                    writeln!(fifo, "pausing_keep_force volume {} 1", volume)?;
+                    fifo.flush()?;
+                }
+            }
+            PlayerBackend::Mpv => {
+                let _ = self.mpv_send(&format!(
+                    r#"{{"command":["set_property","volume",{}]}}"#,
+                    volume
+                ));
+            }
         }
         Ok(())
     }

@@ -312,12 +312,25 @@
       <p class="section-note">Paths to external binaries. Change only if they are installed in non-standard locations.</p>
       <div class="row">
         <div class="form-group">
-          <label>mplayer</label>
-          <input type="text" id="tool-mplayer">
+          <label>Player backend</label>
+          <select id="tool-player">
+            <option value="mplayer">mplayer</option>
+            <option value="mpv">mpv (use on Pi Zero / ARMv6)</option>
+          </select>
         </div>
         <div class="form-group">
           <label>ffmpeg</label>
           <input type="text" id="tool-ffmpeg">
+        </div>
+      </div>
+      <div class="row">
+        <div class="form-group">
+          <label>mplayer path</label>
+          <input type="text" id="tool-mplayer">
+        </div>
+        <div class="form-group">
+          <label>mpv path</label>
+          <input type="text" id="tool-mpv">
         </div>
       </div>
       <div class="row">
@@ -471,7 +484,9 @@
       document.getElementById('eink-busy-pin').value = cfg.display?.eink?.busy_pin ?? 24;
 
       // Tools
+      document.getElementById('tool-player').value = cfg.tools?.player || 'mplayer';
       document.getElementById('tool-mplayer').value = cfg.tools?.mplayer || 'mplayer';
+      document.getElementById('tool-mpv').value = cfg.tools?.mpv || 'mpv';
       document.getElementById('tool-ffmpeg').value = cfg.tools?.ffmpeg || 'ffmpeg';
       document.getElementById('tool-nmcli').value = cfg.tools?.nmcli || 'nmcli';
 
@@ -548,7 +563,9 @@
           },
         },
         tools: {
+          player: document.getElementById('tool-player').value,
           mplayer: document.getElementById('tool-mplayer').value,
+          mpv: document.getElementById('tool-mpv').value,
           ffmpeg: document.getElementById('tool-ffmpeg').value,
           nmcli: document.getElementById('tool-nmcli').value,
         },
