@@ -12,6 +12,8 @@ web = []
 headless = []
 
 [dependencies]
+rppal = "0.19"
+embedded-graphics = "0.8"
 anyhow = "1.0.83"
 clap = { version = "4", features = ["derive"] }
 color-eyre = "0.6.3"

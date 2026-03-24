@@ -30,3 +30,6 @@ pub mod setup;
 
 /// Web UI server (actix-web).
 pub mod web;
+
+/// SPI e-ink display driver (Waveshare 2.13" HAT).
+pub mod eink;

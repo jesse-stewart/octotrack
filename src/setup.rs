@@ -29,6 +29,8 @@ enum AutostartMethod {
 enum DisplayType {
     Tft,
     Hdmi,
+    Headless,
+    EInk,
 }
 
 /// Interactive, idempotent autostart configuration.
@@ -102,25 +104,80 @@ pub fn configure_autostart() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     println!("\n  Display type:");
-    println!("    1 — TFT / framebuffer on tty1");
-    println!("    2 — HDMI or headless");
+    println!("    1 — TFT / framebuffer (tty1, 5s boot delay)");
+    println!("    2 — HDMI monitor (tty1)");
+    println!("    3 — E-ink SPI HAT (headless + SPI display)");
+    println!("    4 — Headless / web only (no UI)");
 
     let display = loop {
-        print!("\n  Choice [1/2]: ");
+        print!("\n  Choice [1/2/3/4]: ");
         io::stdout().flush()?;
         let mut line = String::new();
         io::stdin().read_line(&mut line)?;
         match line.trim() {
             "1" => break DisplayType::Tft,
             "2" | "" => break DisplayType::Hdmi,
-            _ => eprintln!("  Enter 1 or 2."),
+            "3" => break DisplayType::EInk,
+            "4" => break DisplayType::Headless,
+            _ => eprintln!("  Enter 1, 2, 3, or 4."),
         }
     };
 
     match method {
-        AutostartMethod::Systemd => install_systemd_service(&release_exe, &workdir, &user, display),
-        AutostartMethod::Bashrc => install_bashrc_autostart(&release_exe, display),
+        AutostartMethod::Systemd => {
+            remove_bashrc_autostart();
+            install_systemd_service(&release_exe, &workdir, &user, display)
+        }
+        AutostartMethod::Bashrc => {
+            remove_systemd_service();
+            install_bashrc_autostart(&release_exe, display)
+        }
     }
+}
+
+fn remove_systemd_service() {
+    let path = "/etc/systemd/system/octotrack.service";
+    if !std::path::Path::new(path).exists() {
+        return;
+    }
+    let _ = std::process::Command::new("sudo")
+        .args(["systemctl", "disable", "--now", "octotrack"])
+        .status();
+    let _ = std::process::Command::new("sudo")
+        .args(["rm", "-f", path])
+        .status();
+    let _ = std::process::Command::new("sudo")
+        .args(["systemctl", "daemon-reload"])
+        .status();
+    println!("  Removed existing systemd service.");
+}
+
+fn remove_bashrc_autostart() {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+    let bashrc_path = format!("{}/.bashrc", home);
+    let existing = match std::fs::read_to_string(&bashrc_path) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    if !existing.contains(BASHRC_START) {
+        return;
+    }
+    let new_content = if let Some(start) = existing.find(BASHRC_START) {
+        let end = existing
+            .find(BASHRC_END)
+            .map(|i| i + BASHRC_END.len())
+            .unwrap_or(start);
+        let end = if existing[end..].starts_with('\n') {
+            end + 1
+        } else {
+            end
+        };
+        format!("{}{}", &existing[..start], &existing[end..])
+    } else {
+        existing
+    };
+    let _ = std::fs::write(&bashrc_path, new_content);
+    println!("  Removed existing .bashrc autostart block.");
 }
 
 fn install_systemd_service(
@@ -132,7 +189,7 @@ fn install_systemd_service(
     let tty_section = match display {
         DisplayType::Tft => concat!(
             "ExecStartPre=/bin/sleep 5\n",
-            "ExecStartPre=/bin/chvt 1\n",
+            "ExecStartPre=+/bin/chvt 1\n",
             "ExecStartPre=/usr/bin/clear\n",
             "StandardInput=tty\n",
             "StandardOutput=tty\n",
@@ -142,22 +199,50 @@ fn install_systemd_service(
             "TTYVHangup=yes\n",
             "Environment=TERM=linux\n",
         ),
-        DisplayType::Hdmi => "StandardOutput=journal\nStandardError=journal\n",
+        DisplayType::Hdmi => concat!(
+            "ExecStartPre=/bin/sleep 4\n",
+            "ExecStartPre=+/bin/chvt 1\n",
+            "ExecStartPre=/usr/bin/clear\n",
+            "StandardInput=tty\n",
+            "StandardOutput=tty\n",
+            "StandardError=tty\n",
+            "TTYPath=/dev/tty1\n",
+            "TTYReset=yes\n",
+            "TTYVHangup=yes\n",
+            "Environment=TERM=linux\n",
+        ),
+        DisplayType::Headless | DisplayType::EInk => {
+            "StandardOutput=journal\nStandardError=journal\n"
+        }
+    };
+
+    let conflicts = match display {
+        DisplayType::Headless | DisplayType::EInk => "",
+        _ => "Conflicts=getty@tty1.service\nAfter=getty@tty1.service\n",
+    };
+
+    let exe_args = match display {
+        DisplayType::EInk => format!("{exe} --eink"),
+        DisplayType::Headless => format!("{exe} --headless"),
+        _ => exe.to_string(),
     };
 
     let service = format!(
         "[Unit]\n\
          Description=Octotrack Multi-Channel Audio Player\n\
          After=sound.target multi-user.target\n\
+         {conflicts}\
          \n\
          [Service]\n\
          Type=simple\n\
          User={user}\n\
          WorkingDirectory={workdir}\n\
          {tty_section}\
-         ExecStart={exe}\n\
+         ExecStart={exe_args}\n\
+         AmbientCapabilities=CAP_SYSLOG\n\
          Restart=always\n\
          RestartSec=3\n\
+         TimeoutStopSec=10\n\
          \n\
          [Install]\n\
          WantedBy=multi-user.target\n"
@@ -165,6 +250,9 @@ fn install_systemd_service(
 
     let path = "/etc/systemd/system/octotrack.service";
     if try_sudo_write(path, &service) {
+        // Suppress systemd's own late boot console messages (e.g. "Completed
+        // socket interaction for boot stage final") that bleed into the TUI.
+        patch_systemd_log_level();
         let _ = std::process::Command::new("sudo")
             .args(["systemctl", "daemon-reload"])
             .status();
@@ -182,13 +270,60 @@ fn install_systemd_service(
     Ok(())
 }
 
+/// Suppress systemd console messages that bleed into the TUI:
+///   LogLevel=warning  — silences journal noise
+///   ShowStatus=error  — silences "Completed boot stage" status lines
+fn patch_systemd_log_level() {
+    let conf_path = "/etc/systemd/system.conf";
+    let Ok(content) = std::fs::read_to_string(conf_path) else {
+        return;
+    };
+
+    let needs_loglevel = !content.lines().any(|l| l.trim() == "LogLevel=warning");
+    let needs_showstatus = !content.lines().any(|l| l.trim() == "ShowStatus=error");
+
+    if !needs_loglevel && !needs_showstatus {
+        return;
+    }
+
+    let new_content = content
+        .lines()
+        .map(|l| {
+            let stripped = l.trim_start_matches('#').trim();
+            if needs_loglevel && stripped.starts_with("LogLevel=") {
+                "LogLevel=warning".to_string()
+            } else if needs_showstatus && stripped.starts_with("ShowStatus=") {
+                "ShowStatus=error".to_string()
+            } else {
+                l.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // Append any settings that had no existing line to replace.
+    let mut appended = new_content.trim_end().to_string();
+    if needs_loglevel && !appended.lines().any(|l| l.trim() == "LogLevel=warning") {
+        appended.push_str("\nLogLevel=warning");
+    }
+    if needs_showstatus && !appended.lines().any(|l| l.trim() == "ShowStatus=error") {
+        appended.push_str("\nShowStatus=error");
+    }
+    appended.push('\n');
+
+    if try_sudo_write(conf_path, &appended) {
+        println!("  Suppressed systemd console messages in {}.", conf_path);
+    }
+}
+
 fn install_bashrc_autostart(
     exe: &str,
     display: DisplayType,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let run_cmd = match display {
-        DisplayType::Tft => exe.to_string(),
-        DisplayType::Hdmi => format!("{} --headless", exe),
+        DisplayType::Tft | DisplayType::Hdmi => exe.to_string(),
+        DisplayType::Headless => format!("{} --headless", exe),
+        DisplayType::EInk => format!("{} --eink", exe),
     };
 
     let block = format!(

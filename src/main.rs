@@ -13,14 +13,22 @@ use ratatui::Terminal;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
+
+static SHUTDOWN: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn on_sigterm(_: libc::c_int) {
+    SHUTDOWN.store(true, Ordering::Relaxed);
+}
 
 #[derive(Debug, Clone, PartialEq)]
 enum RunMode {
     Headless,
     Tui,
     Gui,
+    EInk,
 }
 
 #[derive(Parser, Debug)]
@@ -32,6 +40,10 @@ struct Cli {
     /// Run as a headless background daemon
     #[arg(long)]
     headless: bool,
+
+    /// Run with SPI e-ink display as the UI (headless + eink)
+    #[arg(long)]
+    eink: bool,
 
     /// Force GUI mode
     #[arg(long)]
@@ -52,12 +64,17 @@ struct Cli {
     /// Configure autostart (systemd service or .bashrc autologin) and exit
     #[arg(long)]
     configure_autostart: bool,
+
+    /// Fill the e-ink display all-black then all-white and exit (hardware test)
+    #[arg(long)]
+    test_eink: bool,
 }
 
 fn detect_mode(cli: &Cli) -> RunMode {
-    match (cli.headless, cli.gui) {
-        (true, _) => RunMode::Headless,
-        (_, true) => RunMode::Gui,
+    match (cli.headless, cli.eink, cli.gui) {
+        (true, _, _) => RunMode::Headless,
+        (_, true, _) => RunMode::EInk,
+        (_, _, true) => RunMode::Gui,
         _ if has_display() => RunMode::Gui,
         _ if !has_tty() => RunMode::Headless,
         _ => RunMode::Tui,
@@ -133,8 +150,10 @@ fn find_tracks_directory() -> String {
         }
     }
 
-    // Fall back to local tracks directory
-    "tracks".to_string()
+    // Fall back to local tracks directory, resolved to an absolute path
+    std::fs::canonicalize("tracks")
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "tracks".to_string())
 }
 
 /// Checks if a directory contains any audio files (mp3, wav, flac)
@@ -502,7 +521,7 @@ fn run_tui(
     let mut needs_redraw = true;
 
     // Start the main loop.
-    while app.running {
+    while app.running && !SHUTDOWN.load(Ordering::Relaxed) {
         // Drain web commands
         drain_commands(&mut app, &cmd_rx);
 
@@ -547,6 +566,12 @@ fn run_headless(
 ) {
     let mut track_cache = TrackListCache::new();
     loop {
+        if SHUTDOWN.load(Ordering::Relaxed) {
+            let mut app = app.lock().unwrap();
+            let _ = app.audio_player.stop_recording();
+            let _ = app.audio_player.stop();
+            break;
+        }
         {
             let mut app = app.lock().unwrap();
             drain_commands(&mut app, &cmd_rx);
@@ -663,8 +688,20 @@ fn start_access_point(config: &Config) -> Result<(), Box<dyn std::error::Error>>
 }
 
 fn main() -> AppResult<()> {
+    // Install SIGTERM handler so systemd shutdown doesn't hang.
+    unsafe {
+        libc::signal(libc::SIGTERM, on_sigterm as *const () as libc::sighandler_t);
+    }
+
     let cli = Cli::parse();
     let mode = detect_mode(&cli);
+
+    // --- E-ink hardware test ---------------------------------------------
+    if cli.test_eink {
+        let config = Config::load();
+        octotrack::eink::run_test(&config.display.eink);
+        return Ok(());
+    }
 
     // --- Pre-compute peaks -----------------------------------------------
     if cli.precompute_peaks {
@@ -753,8 +790,12 @@ fn main() -> AppResult<()> {
         app.schedule_rx = Some(rx);
     }
 
-    // Find tracks directory (USB first, then local fallback)
-    let tracks_dir = find_tracks_directory();
+    // Find tracks directory: explicit config > USB > local fallback
+    let tracks_dir = if !app.config.storage.tracks_dir.is_empty() {
+        app.config.storage.tracks_dir.clone()
+    } else {
+        find_tracks_directory()
+    };
     app.load_tracks(&tracks_dir).unwrap();
 
     // Get initial track metadata
@@ -805,6 +846,17 @@ fn main() -> AppResult<()> {
         RunMode::Gui => {
             // Phase 2: egui implementation — fall back to TUI for now
             run_tui(app, status, broadcaster, cmd_rx)
+        }
+        RunMode::EInk => {
+            let eink_cfg = app.config.display.eink.clone();
+            let eink_shutdown = Arc::new(AtomicBool::new(false));
+            octotrack::eink::spawn(eink_cfg, status.clone(), eink_shutdown.clone());
+            let app = Arc::new(Mutex::new(app));
+            run_headless(app, status, broadcaster, cmd_rx);
+            eink_shutdown.store(true, Ordering::Relaxed);
+            // Give the eink thread a moment to render its goodbye screen
+            std::thread::sleep(std::time::Duration::from_secs(4));
+            Ok(())
         }
     }
 }

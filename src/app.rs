@@ -1,4 +1,4 @@
-use crate::audio::{AudioPlayer, RecordingConfig};
+use crate::audio::{AudioPlayer, PlayerBackend, RecordingConfig};
 use crate::config::Config;
 use crate::schedule::{ScheduleAction, ScheduleMsg};
 use std::sync::mpsc;
@@ -809,6 +809,16 @@ impl App {
 
         // [monitoring]
         self.mon_output_device = cfg.monitoring.output_device.clone();
+
+        // [tools]
+        self.audio_player.backend = PlayerBackend::from_name(&cfg.tools.player);
+        self.audio_player.player_cmd = if cfg.tools.player == "mpv" {
+            cfg.tools.mpv.clone()
+        } else {
+            cfg.tools.mplayer.clone()
+        };
+        self.audio_player.mpv_cmd = cfg.tools.mpv.clone();
+        self.audio_player.ffmpeg_cmd = cfg.tools.ffmpeg.clone();
     }
 
     /// Sync runtime App state back into `self.config` and write to disk.
