@@ -66,7 +66,6 @@ struct Cli {
     configure_autostart: bool,
 
     /// Fill the e-ink display all-black then all-white and exit (hardware test)
-    #[cfg(feature = "eink")]
     #[arg(long)]
     test_eink: bool,
 }
@@ -696,7 +695,6 @@ fn main() -> AppResult<()> {
     let mode = detect_mode(&cli);
 
     // --- E-ink hardware test ---------------------------------------------
-    #[cfg(feature = "eink")]
     if cli.test_eink {
         let config = Config::load();
         octotrack::eink::run_test(&config.display.eink);
@@ -844,23 +842,14 @@ fn main() -> AppResult<()> {
             run_tui(app, status, broadcaster, cmd_rx)
         }
         RunMode::EInk => {
-            #[cfg(feature = "eink")]
-            {
-                let eink_cfg = app.config.display.eink.clone();
-                let eink_shutdown = Arc::new(AtomicBool::new(false));
-                octotrack::eink::spawn(eink_cfg, status.clone(), eink_shutdown.clone());
-                let app = Arc::new(Mutex::new(app));
-                run_headless(app, status, broadcaster, cmd_rx);
-                eink_shutdown.store(true, Ordering::Relaxed);
-                // Give the eink thread a moment to render its goodbye screen
-                std::thread::sleep(std::time::Duration::from_secs(4));
-            }
-            #[cfg(not(feature = "eink"))]
-            {
-                eprintln!("eink: compiled without --features eink, falling back to headless");
-                let app = Arc::new(Mutex::new(app));
-                run_headless(app, status, broadcaster, cmd_rx);
-            }
+            let eink_cfg = app.config.display.eink.clone();
+            let eink_shutdown = Arc::new(AtomicBool::new(false));
+            octotrack::eink::spawn(eink_cfg, status.clone(), eink_shutdown.clone());
+            let app = Arc::new(Mutex::new(app));
+            run_headless(app, status, broadcaster, cmd_rx);
+            eink_shutdown.store(true, Ordering::Relaxed);
+            // Give the eink thread a moment to render its goodbye screen
+            std::thread::sleep(std::time::Duration::from_secs(4));
             Ok(())
         }
     }

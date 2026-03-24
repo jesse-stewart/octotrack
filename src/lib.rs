@@ -32,5 +32,4 @@ pub mod setup;
 pub mod web;
 
 /// SPI e-ink display driver (Waveshare 2.13" HAT).
-#[cfg(feature = "eink")]
 pub mod eink;
