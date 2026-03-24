@@ -30,6 +30,7 @@ enum DisplayType {
     Tft,
     Hdmi,
     Headless,
+    EInk,
 }
 
 /// Interactive, idempotent autostart configuration.
@@ -105,18 +106,20 @@ pub fn configure_autostart() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n  Display type:");
     println!("    1 — TFT / framebuffer (tty1, 5s boot delay)");
     println!("    2 — HDMI monitor (tty1)");
-    println!("    3 — Headless / web only (no TUI)");
+    println!("    3 — E-ink SPI HAT (headless + SPI display)");
+    println!("    4 — Headless / web only (no UI)");
 
     let display = loop {
-        print!("\n  Choice [1/2/3]: ");
+        print!("\n  Choice [1/2/3/4]: ");
         io::stdout().flush()?;
         let mut line = String::new();
         io::stdin().read_line(&mut line)?;
         match line.trim() {
             "1" => break DisplayType::Tft,
             "2" | "" => break DisplayType::Hdmi,
-            "3" => break DisplayType::Headless,
-            _ => eprintln!("  Enter 1, 2, or 3."),
+            "3" => break DisplayType::EInk,
+            "4" => break DisplayType::Headless,
+            _ => eprintln!("  Enter 1, 2, 3, or 4."),
         }
     };
 
@@ -208,12 +211,20 @@ fn install_systemd_service(
             "TTYVHangup=yes\n",
             "Environment=TERM=linux\n",
         ),
-        DisplayType::Headless => "StandardOutput=journal\nStandardError=journal\n",
+        DisplayType::Headless | DisplayType::EInk => {
+            "StandardOutput=journal\nStandardError=journal\n"
+        }
     };
 
     let conflicts = match display {
-        DisplayType::Headless => "",
+        DisplayType::Headless | DisplayType::EInk => "",
         _ => "Conflicts=getty@tty1.service\nAfter=getty@tty1.service\n",
+    };
+
+    let exe_args = match display {
+        DisplayType::EInk => format!("{exe} --eink"),
+        DisplayType::Headless => format!("{exe} --headless"),
+        _ => exe.to_string(),
     };
 
     let service = format!(
@@ -227,7 +238,7 @@ fn install_systemd_service(
          User={user}\n\
          WorkingDirectory={workdir}\n\
          {tty_section}\
-         ExecStart={exe}\n\
+         ExecStart={exe_args}\n\
          AmbientCapabilities=CAP_SYSLOG\n\
          Restart=always\n\
          RestartSec=3\n\
@@ -312,6 +323,7 @@ fn install_bashrc_autostart(
     let run_cmd = match display {
         DisplayType::Tft | DisplayType::Hdmi => exe.to_string(),
         DisplayType::Headless => format!("{} --headless", exe),
+        DisplayType::EInk => format!("{} --eink", exe),
     };
 
     let block = format!(

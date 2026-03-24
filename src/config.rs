@@ -272,6 +272,7 @@ pub struct DisplayConfig {
     pub level_meters: LevelMeterSize,
     /// `"small"` | `"large"`
     pub title: TitleSize,
+    pub eink: EinkConfig,
 }
 
 impl Default for DisplayConfig {
@@ -282,6 +283,35 @@ impl Default for DisplayConfig {
             theme: "dark".to_string(),
             level_meters: LevelMeterSize::Small,
             title: TitleSize::Large,
+            eink: EinkConfig::default(),
+        }
+    }
+}
+
+/// Configuration for an optional SPI e-ink display (Waveshare 2.13" HAT).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EinkConfig {
+    /// Whether the e-ink display is enabled.
+    pub enabled: bool,
+    /// BCM GPIO pin number for the DC (Data/Command) line. Default: 25.
+    pub dc_pin: u8,
+    /// BCM GPIO pin number for the RST (Reset) line. Default: 17.
+    pub rst_pin: u8,
+    /// BCM GPIO pin number for the BUSY line. Default: 24.
+    pub busy_pin: u8,
+    /// Minimum seconds between full display refreshes. Default: 30.
+    pub refresh_interval_secs: u32,
+}
+
+impl Default for EinkConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            dc_pin: 25,
+            rst_pin: 17,
+            busy_pin: 24,
+            refresh_interval_secs: 30,
         }
     }
 }
@@ -567,6 +597,21 @@ fn update_doc(doc: &mut toml_edit::DocumentMut, cfg: &Config) {
     doc["display"]["theme"] = value(cfg.display.theme.as_str());
     doc["display"]["level_meters"] = value(cfg.display.level_meters.as_str());
     doc["display"]["title"] = value(cfg.display.title.as_str());
+
+    // [display.eink] ---------------------------------------------------
+    if !doc["display"]
+        .as_table()
+        .map(|t| t.contains_key("eink"))
+        .unwrap_or(false)
+    {
+        doc["display"]["eink"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+    doc["display"]["eink"]["enabled"] = value(cfg.display.eink.enabled);
+    doc["display"]["eink"]["dc_pin"] = value(cfg.display.eink.dc_pin as i64);
+    doc["display"]["eink"]["rst_pin"] = value(cfg.display.eink.rst_pin as i64);
+    doc["display"]["eink"]["busy_pin"] = value(cfg.display.eink.busy_pin as i64);
+    doc["display"]["eink"]["refresh_interval_secs"] =
+        value(cfg.display.eink.refresh_interval_secs as i64);
 
     // [web] ------------------------------------------------------------
     if !doc.contains_key("web") {

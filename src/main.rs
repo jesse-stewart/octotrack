@@ -28,6 +28,7 @@ enum RunMode {
     Headless,
     Tui,
     Gui,
+    EInk,
 }
 
 #[derive(Parser, Debug)]
@@ -39,6 +40,10 @@ struct Cli {
     /// Run as a headless background daemon
     #[arg(long)]
     headless: bool,
+
+    /// Run with SPI e-ink display as the UI (headless + eink)
+    #[arg(long)]
+    eink: bool,
 
     /// Force GUI mode
     #[arg(long)]
@@ -62,9 +67,10 @@ struct Cli {
 }
 
 fn detect_mode(cli: &Cli) -> RunMode {
-    match (cli.headless, cli.gui) {
-        (true, _) => RunMode::Headless,
-        (_, true) => RunMode::Gui,
+    match (cli.headless, cli.eink, cli.gui) {
+        (true, _, _) => RunMode::Headless,
+        (_, true, _) => RunMode::EInk,
+        (_, _, true) => RunMode::Gui,
         _ if has_display() => RunMode::Gui,
         _ if !has_tty() => RunMode::Headless,
         _ => RunMode::Tui,
@@ -823,6 +829,26 @@ fn main() -> AppResult<()> {
         RunMode::Gui => {
             // Phase 2: egui implementation — fall back to TUI for now
             run_tui(app, status, broadcaster, cmd_rx)
+        }
+        RunMode::EInk => {
+            #[cfg(feature = "eink")]
+            {
+                let eink_cfg = app.config.display.eink.clone();
+                let eink_shutdown = Arc::new(AtomicBool::new(false));
+                octotrack::eink::spawn(eink_cfg, status.clone(), eink_shutdown.clone());
+                let app = Arc::new(Mutex::new(app));
+                run_headless(app, status, broadcaster, cmd_rx);
+                eink_shutdown.store(true, Ordering::Relaxed);
+                // Give the eink thread a moment to render its goodbye screen
+                std::thread::sleep(std::time::Duration::from_secs(4));
+            }
+            #[cfg(not(feature = "eink"))]
+            {
+                eprintln!("eink: compiled without --features eink, falling back to headless");
+                let app = Arc::new(Mutex::new(app));
+                run_headless(app, status, broadcaster, cmd_rx);
+            }
+            Ok(())
         }
     }
 }

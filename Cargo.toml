@@ -10,8 +10,11 @@ default = ["gui", "web"]
 gui = []
 web = []
 headless = []
+eink = ["dep:rppal", "dep:embedded-graphics"]
 
 [dependencies]
+rppal = { version = "0.19", optional = true }
+embedded-graphics = { version = "0.8", optional = true }
 anyhow = "1.0.83"
 clap = { version = "4", features = ["derive"] }
 color-eyre = "0.6.3"
