@@ -27,8 +27,38 @@ enum AutostartMethod {
 }
 
 enum DisplayType {
-    Tft,
+    /// SPI TFT on a specific framebuffer (e.g. fb1).
+    Tft { fb_index: u32 },
     Hdmi,
+}
+
+/// A detected framebuffer display.
+struct DetectedDisplay {
+    index: u32,
+    name: String,
+}
+
+/// Scan `/proc/fb` for all registered framebuffers and classify them.
+fn detect_displays() -> Vec<DetectedDisplay> {
+    let Ok(contents) = std::fs::read_to_string("/proc/fb") else {
+        return Vec::new();
+    };
+    contents
+        .lines()
+        .filter_map(|line| {
+            let (idx, name) = line.split_once(' ')?;
+            Some(DetectedDisplay {
+                index: idx.parse().ok()?,
+                name: name.trim().to_string(),
+            })
+        })
+        .collect()
+}
+
+impl DetectedDisplay {
+    fn label(&self) -> String {
+        format!("fb{} — {}", self.index, self.name)
+    }
 }
 
 /// Interactive, idempotent autostart configuration.
@@ -101,25 +131,117 @@ pub fn configure_autostart() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    println!("\n  Display type:");
-    println!("    1 — TFT / framebuffer on tty1");
-    println!("    2 — HDMI or headless");
+    let display = prompt_display_selection()?;
 
-    let display = loop {
-        print!("\n  Choice [1/2]: ");
-        io::stdout().flush()?;
-        let mut line = String::new();
-        io::stdin().read_line(&mut line)?;
-        match line.trim() {
-            "1" => break DisplayType::Tft,
-            "2" | "" => break DisplayType::Hdmi,
-            _ => eprintln!("  Enter 1 or 2."),
-        }
+    let result = match method {
+        AutostartMethod::Systemd => install_systemd_service(&release_exe, &workdir, &user, &display),
+        AutostartMethod::Bashrc => install_bashrc_autostart(&release_exe, &display),
     };
 
-    match method {
-        AutostartMethod::Systemd => install_systemd_service(&release_exe, &workdir, &user, display),
-        AutostartMethod::Bashrc => install_bashrc_autostart(&release_exe, display),
+    if let DisplayType::Tft { fb_index } = display {
+        configure_fbcon_for_tft(fb_index);
+    }
+
+    result
+}
+
+/// Ensure the kernel console on tty1 is directed to the selected TFT
+/// framebuffer.
+///
+/// Two mechanisms are used:
+///   1. `fbcon=map:0N` in `/boot/firmware/cmdline.txt` (works when fbN is
+///      available early enough at boot).
+///   2. A `con2fbmap` systemd service that runs `con2fbmap 1 N` after modules
+///      are loaded — this is the reliable fallback when the fbtft driver loads
+///      too late for the cmdline parameter to take effect.
+fn configure_fbcon_for_tft(fb_index: u32) {
+    configure_fbcon_cmdline(fb_index);
+    install_con2fbmap_service(fb_index);
+}
+
+fn configure_fbcon_cmdline(fb_index: u32) {
+    const CMDLINE: &str = "/boot/firmware/cmdline.txt";
+    let Ok(contents) = std::fs::read_to_string(CMDLINE) else {
+        println!("\n  Could not read {}.", CMDLINE);
+        return;
+    };
+
+    // Build the map string: console 0 → fb0, console 1 → fbN
+    let map_val = format!("fbcon=map:0{}", fb_index);
+
+    if contents.contains(&map_val) {
+        println!("  fbcon cmdline already configured for fb{}.", fb_index);
+        return;
+    }
+
+    let new = if contents.contains("fbcon=map:") {
+        contents
+            .split_whitespace()
+            .map(|tok| {
+                if tok.starts_with("fbcon=map:") {
+                    map_val.as_str()
+                } else {
+                    tok
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+            + "\n"
+    } else {
+        format!("{} {}\n", contents.trim_end(), map_val)
+    };
+
+    if try_sudo_write(CMDLINE, &new) {
+        println!("  Configured {} in {}.", map_val, CMDLINE);
+    } else {
+        println!("\n  Could not write {} (sudo required).", CMDLINE);
+        println!("  Add {} to the kernel command line manually.", map_val);
+    }
+}
+
+fn install_con2fbmap_service(fb_index: u32) {
+    const SERVICE_PATH: &str = "/etc/systemd/system/con2fbmap.service";
+    let service = format!(
+        "\
+[Unit]
+Description=Map console 1 to framebuffer {fb} (TFT)
+After=systemd-modules-load.service
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/con2fbmap 1 {fb}
+RemainAfterExit=yes
+
+[Install]
+WantedBy=sysinit.target
+",
+        fb = fb_index
+    );
+
+    let con2fbmap_cmd = format!("con2fbmap 1 {}", fb_index);
+
+    // Check if already installed with the right fb index.
+    let already = std::fs::read_to_string(SERVICE_PATH)
+        .map(|s| s.contains(&con2fbmap_cmd))
+        .unwrap_or(false);
+    if already {
+        println!("  con2fbmap service already installed.");
+        return;
+    }
+
+    if try_sudo_write(SERVICE_PATH, &service) {
+        let _ = std::process::Command::new("sudo")
+            .args(["systemctl", "daemon-reload"])
+            .status();
+        let _ = std::process::Command::new("sudo")
+            .args(["systemctl", "enable", "con2fbmap"])
+            .status();
+        println!("  Installed con2fbmap service (maps console to TFT at boot).");
+    } else {
+        println!("  Could not install con2fbmap service (sudo required).");
+        println!("  To set up manually:");
+        println!("    sudo con2fbmap 1 1");
     }
 }
 
@@ -127,28 +249,35 @@ fn install_systemd_service(
     exe: &str,
     workdir: &str,
     user: &str,
-    display: DisplayType,
+    display: &DisplayType,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let tty_section = match display {
-        DisplayType::Tft => concat!(
-            "ExecStartPre=/bin/sleep 5\n",
-            "ExecStartPre=/bin/chvt 1\n",
-            "ExecStartPre=/usr/bin/clear\n",
-            "StandardInput=tty\n",
-            "StandardOutput=tty\n",
-            "StandardError=tty\n",
-            "TTYPath=/dev/tty1\n",
-            "TTYReset=yes\n",
-            "TTYVHangup=yes\n",
-            "Environment=TERM=linux\n",
+    let (unit_extra, tty_section) = match display {
+        DisplayType::Tft { .. } => (
+            "Conflicts=getty@tty1.service\nAfter=getty@tty1.service\n",
+            concat!(
+                "ExecStartPre=/bin/sleep 5\n",
+                "ExecStartPre=+/bin/chvt 1\n",
+                "ExecStartPre=/usr/bin/clear\n",
+                "StandardInput=tty\n",
+                "StandardOutput=tty\n",
+                "StandardError=tty\n",
+                "TTYPath=/dev/tty1\n",
+                "TTYReset=yes\n",
+                "TTYVHangup=yes\n",
+                "Environment=TERM=linux\n",
+            ),
         ),
-        DisplayType::Hdmi => "StandardOutput=journal\nStandardError=journal\n",
+        DisplayType::Hdmi => (
+            "",
+            "StandardOutput=journal\nStandardError=journal\n",
+        ),
     };
 
     let service = format!(
         "[Unit]\n\
          Description=Octotrack Multi-Channel Audio Player\n\
          After=sound.target multi-user.target\n\
+         {unit_extra}\
          \n\
          [Service]\n\
          Type=simple\n\
@@ -156,8 +285,10 @@ fn install_systemd_service(
          WorkingDirectory={workdir}\n\
          {tty_section}\
          ExecStart={exe}\n\
+         AmbientCapabilities=CAP_SYSLOG\n\
          Restart=always\n\
          RestartSec=3\n\
+         TimeoutStopSec=10\n\
          \n\
          [Install]\n\
          WantedBy=multi-user.target\n"
@@ -184,10 +315,10 @@ fn install_systemd_service(
 
 fn install_bashrc_autostart(
     exe: &str,
-    display: DisplayType,
+    display: &DisplayType,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let run_cmd = match display {
-        DisplayType::Tft => exe.to_string(),
+        DisplayType::Tft { .. } => exe.to_string(),
         DisplayType::Hdmi => format!("{} --headless", exe),
     };
 
@@ -363,6 +494,52 @@ pub fn hash_password(password: &str) -> Result<String, Box<dyn std::error::Error
         .hash_password(password.as_bytes(), &salt)
         .map_err(|e| format!("Failed to hash password: {e}"))?;
     Ok(hash.to_string())
+}
+
+/// Detect connected displays and let the user pick one (or headless).
+fn prompt_display_selection() -> Result<DisplayType, Box<dyn std::error::Error>> {
+    let displays = detect_displays();
+
+    println!("\n  Display:");
+    if displays.is_empty() {
+        println!("    No framebuffer displays detected.");
+        println!("    1 — headless (no display)");
+        println!();
+        print!("  Choice [1]: ");
+        io::stdout().flush()?;
+        let mut line = String::new();
+        io::stdin().read_line(&mut line)?;
+        return Ok(DisplayType::Hdmi);
+    }
+
+    for (i, d) in displays.iter().enumerate() {
+        println!("    {} — {}", i + 1, d.label());
+    }
+    let headless_num = displays.len() + 1;
+    println!("    {} — headless (no display)", headless_num);
+
+    loop {
+        print!("\n  Choice [1-{}]: ", headless_num);
+        io::stdout().flush()?;
+        let mut line = String::new();
+        io::stdin().read_line(&mut line)?;
+        let Ok(choice) = line.trim().parse::<usize>() else {
+            eprintln!("  Enter a number from 1 to {}.", headless_num);
+            continue;
+        };
+        if choice == headless_num {
+            return Ok(DisplayType::Hdmi);
+        }
+        if choice >= 1 && choice <= displays.len() {
+            let d = &displays[choice - 1];
+            if d.index == 0 {
+                return Ok(DisplayType::Hdmi);
+            } else {
+                return Ok(DisplayType::Tft { fb_index: d.index });
+            }
+        }
+        eprintln!("  Enter a number from 1 to {}.", headless_num);
+    }
 }
 
 /// Print a yes/no prompt and return the user's choice.
