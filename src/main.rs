@@ -64,6 +64,11 @@ struct Cli {
     /// Configure autostart (systemd service or .bashrc autologin) and exit
     #[arg(long)]
     configure_autostart: bool,
+
+    /// Fill the e-ink display all-black then all-white and exit (hardware test)
+    #[cfg(feature = "eink")]
+    #[arg(long)]
+    test_eink: bool,
 }
 
 fn detect_mode(cli: &Cli) -> RunMode {
@@ -689,6 +694,14 @@ fn main() -> AppResult<()> {
 
     let cli = Cli::parse();
     let mode = detect_mode(&cli);
+
+    // --- E-ink hardware test ---------------------------------------------
+    #[cfg(feature = "eink")]
+    if cli.test_eink {
+        let config = Config::load();
+        octotrack::eink::run_test(&config.display.eink);
+        return Ok(());
+    }
 
     // --- Pre-compute peaks -----------------------------------------------
     if cli.precompute_peaks {
