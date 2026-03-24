@@ -150,8 +150,10 @@ fn find_tracks_directory() -> String {
         }
     }
 
-    // Fall back to local tracks directory
-    "tracks".to_string()
+    // Fall back to local tracks directory, resolved to an absolute path
+    std::fs::canonicalize("tracks")
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "tracks".to_string())
 }
 
 /// Checks if a directory contains any audio files (mp3, wav, flac)
