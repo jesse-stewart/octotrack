@@ -578,7 +578,7 @@ impl AudioPlayer {
                 let _ = std::fs::remove_file(&self.socket_path);
                 let mut cmd = Command::new(&self.mpv_cmd);
                 cmd.arg(format!("--input-ipc-server={}", self.socket_path.display()))
-                    .arg("--really-quiet")
+                    .arg("--no-terminal")
                     .arg("--no-audio-display")
                     .arg("--ao=alsa")
                     .arg(format!(
@@ -742,7 +742,7 @@ impl AudioPlayer {
                 let _ = std::fs::remove_file(&self.socket_path);
                 let mut cmd = Command::new(&self.mpv_cmd);
                 cmd.arg(format!("--input-ipc-server={}", self.socket_path.display()))
-                    .arg("--really-quiet")
+                    .arg("--no-terminal")
                     .arg("--no-audio-display")
                     .arg("--ao=alsa")
                     .arg(format!(
