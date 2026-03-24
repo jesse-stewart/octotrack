@@ -110,10 +110,10 @@ impl DrawTarget for Framebuffer {
             // always portrait (122×250).  Canvas height for those rotations is
             // WIDTH (122) and canvas width is HEIGHT (250).
             let (hx, hy) = match self.rotation % 360 {
-                90 => (WIDTH as i32 - 1 - cy, cx),   // landscape CW  → portrait
+                90 => (WIDTH as i32 - 1 - cy, cx), // landscape CW  → portrait
                 180 => (WIDTH as i32 - 1 - cx, HEIGHT as i32 - 1 - cy),
                 270 => (cy, HEIGHT as i32 - 1 - cx), // landscape CCW → portrait
-                _ => (cx, cy),                        // 0° — identity
+                _ => (cx, cy),                       // 0° — identity
             };
             if hx >= 0 && hy >= 0 && (hx as usize) < WIDTH && (hy as usize) < HEIGHT {
                 self.set_pixel(hx as usize, hy as usize, color == BinaryColor::On);
@@ -571,7 +571,8 @@ pub fn spawn(cfg: EinkConfig, status: Arc<RwLock<SharedStatus>>, shutdown: Arc<A
             let timer_full = last_full.elapsed() >= refresh_interval;
             let ghosting = partial_count >= MAX_PARTIAL;
 
-            if needs_full || track_changed || play_changed || rec_changed || timer_full || ghosting {
+            if needs_full || track_changed || play_changed || rec_changed || timer_full || ghosting
+            {
                 eprintln!(
                     "eink: full refresh (track_changed={track_changed} play={} rec={})",
                     s.playing, s.recording
