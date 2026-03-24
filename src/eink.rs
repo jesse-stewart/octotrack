@@ -533,29 +533,23 @@ pub fn spawn(cfg: EinkConfig, status: Arc<RwLock<SharedStatus>>, shutdown: Arc<A
         };
 
         eprintln!("eink: hardware opened — initialising display...");
-        display.init();
+        // Start in fast/partial mode and stay there. A full refresh (which
+        // causes the visible flash/blink) is only used for the occasional
+        // ghosting cleanup and the shutdown screen.
+        display.init_fast();
         eprintln!("eink: init complete");
 
-        let refresh_interval = Duration::from_secs(cfg.refresh_interval_secs as u64);
-        // Partial refresh on the 2.13" V4 takes ~0.3 s; 1 s gives smooth position updates.
-        let partial_interval = Duration::from_secs(1);
-        // After this many partial refreshes, do a full refresh to clear ghosting.
-        const MAX_PARTIAL: u32 = 20;
+        // After this many partial refreshes, do one silent full refresh to
+        // clear ghost images, then immediately return to partial mode.
+        const MAX_PARTIAL: u32 = 50;
 
         let rotation = cfg.rotation;
         let mut fb = Framebuffer::new(rotation);
-        let mut last_full = Instant::now()
-            .checked_sub(refresh_interval)
-            .unwrap_or_else(Instant::now);
-        let mut last_partial = Instant::now();
         let mut partial_count: u32 = 0;
         let mut last_track: Option<String> = None;
         let mut last_playing = false;
         let mut last_recording = false;
-        // in_partial_mode tracks whether init_fast() has been called so we
-        // don't pay the init cost before every partial update.
-        let mut in_partial_mode = false;
-        let mut needs_full = true;
+        let mut needs_update = true; // draw initial state on first tick
 
         while !shutdown.load(Ordering::Relaxed) {
             thread::sleep(Duration::from_millis(250));
@@ -565,46 +559,36 @@ pub fn spawn(cfg: EinkConfig, status: Arc<RwLock<SharedStatus>>, shutdown: Arc<A
                 g.clone()
             };
 
+            // Only update on meaningful state changes — no position timer.
             let track_changed = s.current_track != last_track;
             let play_changed = s.playing != last_playing;
             let rec_changed = s.recording != last_recording;
-            let timer_full = last_full.elapsed() >= refresh_interval;
-            let ghosting = partial_count >= MAX_PARTIAL;
 
-            if needs_full || track_changed || play_changed || rec_changed || timer_full || ghosting
-            {
-                eprintln!(
-                    "eink: full refresh (track_changed={track_changed} play={} rec={})",
-                    s.playing, s.recording
-                );
-                // Re-init only if we were in partial mode (different waveform LUT).
-                if in_partial_mode {
-                    display.init();
-                    in_partial_mode = false;
-                }
-                render(&mut fb, &s);
+            if !needs_update && !track_changed && !play_changed && !rec_changed {
+                continue;
+            }
+
+            render(&mut fb, &s);
+
+            if partial_count >= MAX_PARTIAL {
+                // Periodic ghosting cleanup: one full refresh then back to partial mode.
+                eprintln!("eink: ghosting cleanup (full refresh)");
+                display.init();
                 display.display_full(&fb);
-
-                last_track = s.current_track.clone();
-                last_playing = s.playing;
-                last_recording = s.recording;
-                last_full = Instant::now();
-                last_partial = Instant::now();
+                display.init_fast();
                 partial_count = 0;
-                needs_full = false;
-            } else if s.playing && last_partial.elapsed() >= partial_interval {
-                if !in_partial_mode {
-                    display.init_fast();
-                    in_partial_mode = true;
-                }
-                render(&mut fb, &s);
+            } else {
                 display.display_partial(&fb);
-                last_partial = Instant::now();
                 partial_count += 1;
             }
+
+            last_track = s.current_track.clone();
+            last_playing = s.playing;
+            last_recording = s.recording;
+            needs_update = false;
         }
 
-        // Show a goodbye screen then sleep.
+        // Goodbye screen — full refresh so it persists cleanly after sleep.
         let mut goodbye = Framebuffer::new(rotation);
         let style = MonoTextStyle::new(&FONT_9X15_BOLD, BinaryColor::On);
         let _ = Text::with_baseline("octotrack", Point::new(10, 110), style, Baseline::Top)
@@ -617,9 +601,7 @@ pub fn spawn(cfg: EinkConfig, status: Arc<RwLock<SharedStatus>>, shutdown: Arc<A
             Baseline::Top,
         )
         .draw(&mut goodbye);
-        if in_partial_mode {
-            display.init();
-        }
+        display.init();
         display.display_full(&goodbye);
         display.sleep();
     });

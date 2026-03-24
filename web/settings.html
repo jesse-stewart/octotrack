@@ -263,6 +263,49 @@
       </div>
     </div>
 
+    <!-- E-ink Display -->
+    <div class="card">
+      <h2>E-ink Display</h2>
+      <p class="section-note">Waveshare 2.13" SPI HAT (or compatible). Requires SPI enabled via raspi-config and the app started with <code>--eink</code>.</p>
+      <div class="form-group" style="margin-bottom:1rem">
+        <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">
+          <input type="checkbox" id="eink-enabled"> Enable e-ink display
+        </label>
+      </div>
+      <div class="row">
+        <div class="form-group">
+          <label>Rotation (°)</label>
+          <select id="eink-rotation">
+            <option value="0">0 — portrait, cable at bottom</option>
+            <option value="90">90 — landscape, cable at right</option>
+            <option value="180">180 — portrait, cable at top</option>
+            <option value="270">270 — landscape, cable at left (HAT default)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Full Refresh Interval (seconds)</label>
+          <input type="number" id="eink-refresh-interval" min="5" max="3600">
+        </div>
+      </div>
+      <div class="row">
+        <div class="form-group">
+          <label>DC Pin (BCM)</label>
+          <input type="number" id="eink-dc-pin" min="0" max="27">
+        </div>
+        <div class="form-group">
+          <label>RST Pin (BCM)</label>
+          <input type="number" id="eink-rst-pin" min="0" max="27">
+        </div>
+      </div>
+      <div class="row">
+        <div class="form-group">
+          <label>BUSY Pin (BCM)</label>
+          <input type="number" id="eink-busy-pin" min="0" max="27">
+        </div>
+        <div class="form-group"></div>
+      </div>
+    </div>
+
     <!-- Tools -->
     <div class="card">
       <h2>Tools</h2>
@@ -419,6 +462,14 @@
       document.getElementById('display-level-meters').value = cfg.display?.level_meters || 'small';
       document.getElementById('display-title').value = cfg.display?.title || 'large';
 
+      // E-ink
+      document.getElementById('eink-enabled').checked = cfg.display?.eink?.enabled ?? false;
+      document.getElementById('eink-rotation').value = String(cfg.display?.eink?.rotation ?? 0);
+      document.getElementById('eink-refresh-interval').value = cfg.display?.eink?.refresh_interval_secs ?? 30;
+      document.getElementById('eink-dc-pin').value = cfg.display?.eink?.dc_pin ?? 25;
+      document.getElementById('eink-rst-pin').value = cfg.display?.eink?.rst_pin ?? 17;
+      document.getElementById('eink-busy-pin').value = cfg.display?.eink?.busy_pin ?? 24;
+
       // Tools
       document.getElementById('tool-mplayer').value = cfg.tools?.mplayer || 'mplayer';
       document.getElementById('tool-ffmpeg').value = cfg.tools?.ffmpeg || 'ffmpeg';
@@ -487,6 +538,14 @@
         display: {
           level_meters: document.getElementById('display-level-meters').value,
           title: document.getElementById('display-title').value,
+          eink: {
+            enabled: document.getElementById('eink-enabled').checked,
+            rotation: parseInt(document.getElementById('eink-rotation').value) || 0,
+            refresh_interval_secs: parseInt(document.getElementById('eink-refresh-interval').value) || 30,
+            dc_pin: parseInt(document.getElementById('eink-dc-pin').value) || 25,
+            rst_pin: parseInt(document.getElementById('eink-rst-pin').value) || 17,
+            busy_pin: parseInt(document.getElementById('eink-busy-pin').value) || 24,
+          },
         },
         tools: {
           mplayer: document.getElementById('tool-mplayer').value,

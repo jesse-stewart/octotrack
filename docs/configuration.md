@@ -98,6 +98,14 @@ address = "192.168.42.1"
 dhcp_range_start = "192.168.42.2"
 dhcp_range_end = "192.168.42.20"
 
+[display.eink]
+enabled = false
+rotation = 0             # 0 / 90 / 180 / 270 degrees clockwise
+dc_pin = 25
+rst_pin = 17
+busy_pin = 24
+refresh_interval_secs = 30
+
 [logging]
 level = "info"
 log_file = ""
@@ -180,6 +188,34 @@ nmcli = "nmcli"
 | `address` | `"192.168.42.1"` | IP address assigned to the AP interface. |
 | `dhcp_range_start` | `"192.168.42.2"` | Start of DHCP address pool. |
 | `dhcp_range_end` | `"192.168.42.20"` | End of DHCP address pool. |
+
+## `[display.eink]`
+
+Settings for the Waveshare 2.13" SPI e-Paper HAT (V2/V3/V4 compatible). Requires SPI enabled on the Pi (`sudo raspi-config → Interface Options → SPI`) and the app started with `--eink`.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `enabled` | `false` | Enable the e-ink display driver. |
+| `rotation` | `0` | Content rotation in degrees clockwise. `0` = portrait cable-down, `90` = landscape cable-right, `180` = portrait cable-up, `270` = landscape cable-left (standard HAT orientation). |
+| `dc_pin` | `25` | BCM GPIO pin for the DC (Data/Command) line. |
+| `rst_pin` | `17` | BCM GPIO pin for the RST (Reset) line. |
+| `busy_pin` | `24` | BCM GPIO pin for the BUSY line. |
+| `refresh_interval_secs` | `30` | Minimum seconds between full display refreshes. A full refresh is also triggered immediately on track change or play/stop state change. |
+
+### Pin connections
+
+| HAT signal | BCM pin | Notes |
+|------------|---------|-------|
+| MOSI (DIN) | 10 | SPI0 hardware — not configurable |
+| SCLK (CLK) | 11 | SPI0 hardware — not configurable |
+| CS (CE0)   | 8  | SPI0 hardware — not configurable |
+| DC         | 25 | Configurable via `dc_pin` |
+| RST        | 17 | Configurable via `rst_pin` |
+| BUSY       | 24 | Configurable via `busy_pin` |
+
+### Test the hardware
+
+Run `octotrack --test-eink` to fill the display all-black then all-white and exit. This confirms SPI/GPIO access is working before running the app normally.
 
 ## `[logging]`
 
