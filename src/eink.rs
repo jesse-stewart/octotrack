@@ -56,20 +56,29 @@ const BUFFER_SIZE: usize = BYTES_PER_ROW * HEIGHT; // 4 000
 
 /// A 1-bpp monochrome frame buffer matching the e-ink panel RAM layout.
 ///
-/// Each bit represents one pixel:
-/// - `1` → white (no ink)
-/// - `0` → black (ink)
+/// Hardware pixel `(hx, hy)` occupies bit `7 − (hx % 8)` of byte
+/// `hy * BYTES_PER_ROW + hx / 8`.
 ///
-/// Pixel `(x, y)` occupies bit `7 − (x % 8)` of byte `y * BYTES_PER_ROW + x / 8`.
+/// `rotation` (0 / 90 / 180 / 270 °CW) determines the logical canvas size
+/// and the coordinate transform applied in `DrawTarget::draw_iter`:
+///
+/// | rotation | canvas (W × H) | typical HAT mounting   |
+/// |----------|----------------|------------------------|
+/// | 0        | 122 × 250      | cable at bottom        |
+/// | 90       | 250 × 122      | cable at right         |
+/// | 180      | 122 × 250      | cable at top           |
+/// | 270      | 250 × 122      | cable at left (HAT default) |
 struct Framebuffer {
     data: [u8; BUFFER_SIZE],
+    rotation: u16,
 }
 
 impl Framebuffer {
-    fn new() -> Self {
+    fn new(rotation: u16) -> Self {
         Self {
             data: [0xFF; BUFFER_SIZE],
-        } // start all-white
+            rotation,
+        }
     }
 
     fn set_pixel(&mut self, x: usize, y: usize, black: bool) {
@@ -95,8 +104,19 @@ impl DrawTarget for Framebuffer {
         I: IntoIterator<Item = Pixel<BinaryColor>>,
     {
         for Pixel(point, color) in pixels {
-            if point.x >= 0 && point.y >= 0 {
-                self.set_pixel(point.x as usize, point.y as usize, color == BinaryColor::On);
+            let (cx, cy) = (point.x, point.y);
+            // Transform logical canvas coords → hardware coords.
+            // For 90°/270° the canvas is landscape (250×122); the hardware is
+            // always portrait (122×250).  Canvas height for those rotations is
+            // WIDTH (122) and canvas width is HEIGHT (250).
+            let (hx, hy) = match self.rotation % 360 {
+                90 => (WIDTH as i32 - 1 - cy, cx),   // landscape CW  → portrait
+                180 => (WIDTH as i32 - 1 - cx, HEIGHT as i32 - 1 - cy),
+                270 => (cy, HEIGHT as i32 - 1 - cx), // landscape CCW → portrait
+                _ => (cx, cy),                        // 0° — identity
+            };
+            if hx >= 0 && hy >= 0 && (hx as usize) < WIDTH && (hy as usize) < HEIGHT {
+                self.set_pixel(hx as usize, hy as usize, color == BinaryColor::On);
             }
         }
         Ok(())
@@ -105,7 +125,10 @@ impl DrawTarget for Framebuffer {
 
 impl OriginDimensions for Framebuffer {
     fn size(&self) -> Size {
-        Size::new(WIDTH as u32, HEIGHT as u32)
+        match self.rotation % 360 {
+            90 | 270 => Size::new(HEIGHT as u32, WIDTH as u32), // landscape: 250×122
+            _ => Size::new(WIDTH as u32, HEIGHT as u32),        // portrait:  122×250
+        }
     }
 }
 
@@ -472,6 +495,7 @@ pub fn run_test(cfg: &EinkConfig) {
     eprintln!("eink: init done — writing all-black frame...");
     let black = Framebuffer {
         data: [0x00; BUFFER_SIZE],
+        rotation: cfg.rotation,
     };
     display.display_full(&black);
     eprintln!("eink: all-black displayed — waiting 2 s...");
@@ -479,6 +503,7 @@ pub fn run_test(cfg: &EinkConfig) {
     eprintln!("eink: writing all-white frame...");
     let white = Framebuffer {
         data: [0xFF; BUFFER_SIZE],
+        rotation: cfg.rotation,
     };
     display.display_full(&white);
     eprintln!("eink: all-white displayed — test complete");
@@ -512,16 +537,24 @@ pub fn spawn(cfg: EinkConfig, status: Arc<RwLock<SharedStatus>>, shutdown: Arc<A
         eprintln!("eink: init complete");
 
         let refresh_interval = Duration::from_secs(cfg.refresh_interval_secs as u64);
-        let partial_interval = Duration::from_secs(5);
+        // Partial refresh on the 2.13" V4 takes ~0.3 s; 1 s gives smooth position updates.
+        let partial_interval = Duration::from_secs(1);
+        // After this many partial refreshes, do a full refresh to clear ghosting.
+        const MAX_PARTIAL: u32 = 20;
 
-        let mut fb = Framebuffer::new();
+        let rotation = cfg.rotation;
+        let mut fb = Framebuffer::new(rotation);
         let mut last_full = Instant::now()
             .checked_sub(refresh_interval)
             .unwrap_or_else(Instant::now);
         let mut last_partial = Instant::now();
+        let mut partial_count: u32 = 0;
         let mut last_track: Option<String> = None;
         let mut last_playing = false;
         let mut last_recording = false;
+        // in_partial_mode tracks whether init_fast() has been called so we
+        // don't pay the init cost before every partial update.
+        let mut in_partial_mode = false;
         let mut needs_full = true;
 
         while !shutdown.load(Ordering::Relaxed) {
@@ -536,14 +569,19 @@ pub fn spawn(cfg: EinkConfig, status: Arc<RwLock<SharedStatus>>, shutdown: Arc<A
             let play_changed = s.playing != last_playing;
             let rec_changed = s.recording != last_recording;
             let timer_full = last_full.elapsed() >= refresh_interval;
+            let ghosting = partial_count >= MAX_PARTIAL;
 
-            if needs_full || track_changed || play_changed || rec_changed || timer_full {
+            if needs_full || track_changed || play_changed || rec_changed || timer_full || ghosting {
                 eprintln!(
                     "eink: full refresh (track_changed={track_changed} play={} rec={})",
                     s.playing, s.recording
                 );
+                // Re-init only if we were in partial mode (different waveform LUT).
+                if in_partial_mode {
+                    display.init();
+                    in_partial_mode = false;
+                }
                 render(&mut fb, &s);
-                display.init();
                 display.display_full(&fb);
 
                 last_track = s.current_track.clone();
@@ -551,17 +589,22 @@ pub fn spawn(cfg: EinkConfig, status: Arc<RwLock<SharedStatus>>, shutdown: Arc<A
                 last_recording = s.recording;
                 last_full = Instant::now();
                 last_partial = Instant::now();
+                partial_count = 0;
                 needs_full = false;
             } else if s.playing && last_partial.elapsed() >= partial_interval {
+                if !in_partial_mode {
+                    display.init_fast();
+                    in_partial_mode = true;
+                }
                 render(&mut fb, &s);
-                display.init_fast();
                 display.display_partial(&fb);
                 last_partial = Instant::now();
+                partial_count += 1;
             }
         }
 
         // Show a goodbye screen then sleep.
-        let mut goodbye = Framebuffer::new();
+        let mut goodbye = Framebuffer::new(rotation);
         let style = MonoTextStyle::new(&FONT_9X15_BOLD, BinaryColor::On);
         let _ = Text::with_baseline("octotrack", Point::new(10, 110), style, Baseline::Top)
             .draw(&mut goodbye);
@@ -573,7 +616,9 @@ pub fn spawn(cfg: EinkConfig, status: Arc<RwLock<SharedStatus>>, shutdown: Arc<A
             Baseline::Top,
         )
         .draw(&mut goodbye);
-        display.init();
+        if in_partial_mode {
+            display.init();
+        }
         display.display_full(&goodbye);
         display.sleep();
     });

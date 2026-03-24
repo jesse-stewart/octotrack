@@ -302,6 +302,13 @@ pub struct EinkConfig {
     pub busy_pin: u8,
     /// Minimum seconds between full display refreshes. Default: 30.
     pub refresh_interval_secs: u32,
+    /// Content rotation in degrees clockwise: 0, 90, 180, or 270.
+    ///
+    /// 0   — portrait, cable at bottom  (122 × 250 canvas)
+    /// 90  — landscape, cable at right  (250 × 122 canvas)
+    /// 180 — portrait, cable at top     (122 × 250 canvas)
+    /// 270 — landscape, cable at left   (250 × 122 canvas)  ← Waveshare HAT default
+    pub rotation: u16,
 }
 
 impl Default for EinkConfig {
@@ -312,6 +319,7 @@ impl Default for EinkConfig {
             rst_pin: 17,
             busy_pin: 24,
             refresh_interval_secs: 30,
+            rotation: 0,
         }
     }
 }
@@ -612,6 +620,7 @@ fn update_doc(doc: &mut toml_edit::DocumentMut, cfg: &Config) {
     doc["display"]["eink"]["busy_pin"] = value(cfg.display.eink.busy_pin as i64);
     doc["display"]["eink"]["refresh_interval_secs"] =
         value(cfg.display.eink.refresh_interval_secs as i64);
+    doc["display"]["eink"]["rotation"] = value(cfg.display.eink.rotation as i64);
 
     // [web] ------------------------------------------------------------
     if !doc.contains_key("web") {
