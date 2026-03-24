@@ -585,7 +585,6 @@ impl AudioPlayer {
                         "--audio-device=alsa/{}",
                         playback_device.replace("hw:", "plughw:")
                     ))
-                    .arg(format!("--audio-channels={}", output_channel_count))
                     .arg(format!("--volume={}", volume));
                 if max_volume > 100 {
                     cmd.arg(format!("--volume-max={}", max_volume));
@@ -749,7 +748,6 @@ impl AudioPlayer {
                         "--audio-device=alsa/{}",
                         playback_device.replace("hw:", "plughw:")
                     ))
-                    .arg(format!("--audio-channels={}", output_channel_count))
                     .arg(format!("--volume={}", volume));
                 if max_volume > 100 {
                     cmd.arg(format!("--volume-max={}", max_volume));
