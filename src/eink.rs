@@ -450,15 +450,14 @@ fn render(fb: &mut Framebuffer, status: &SharedStatus) {
 // Background thread
 // ---------------------------------------------------------------------------
 
-/// Spawn the e-ink display update thread.
-///
-/// The thread runs until `shutdown` is set, then clears the display and
-/// puts it into deep sleep before exiting.
 /// Blocking sanity-check: fill the display all-black, wait 2 s, fill all-white.
 ///
 /// Run with `octotrack --test-eink` to verify hardware before normal use.
 pub fn run_test(cfg: &EinkConfig) {
-    eprintln!("eink: opening SPI0 (CE0) at 4 MHz, DC={}, RST={}, BUSY={}", cfg.dc_pin, cfg.rst_pin, cfg.busy_pin);
+    eprintln!(
+        "eink: opening SPI0 (CE0) at 4 MHz, DC={}, RST={}, BUSY={}",
+        cfg.dc_pin, cfg.rst_pin, cfg.busy_pin
+    );
     let mut display = match EinkDisplay::new(cfg) {
         Ok(d) => d,
         Err(e) => {
@@ -471,26 +470,39 @@ pub fn run_test(cfg: &EinkConfig) {
     eprintln!("eink: SPI+GPIO opened OK — running init...");
     display.init();
     eprintln!("eink: init done — writing all-black frame...");
-    let black = Framebuffer { data: [0x00; BUFFER_SIZE] };
+    let black = Framebuffer {
+        data: [0x00; BUFFER_SIZE],
+    };
     display.display_full(&black);
     eprintln!("eink: all-black displayed — waiting 2 s...");
     thread::sleep(Duration::from_secs(2));
     eprintln!("eink: writing all-white frame...");
-    let white = Framebuffer { data: [0xFF; BUFFER_SIZE] };
+    let white = Framebuffer {
+        data: [0xFF; BUFFER_SIZE],
+    };
     display.display_full(&white);
     eprintln!("eink: all-white displayed — test complete");
     display.sleep();
 }
 
+/// Spawn the e-ink display update thread.
+///
+/// The thread runs until `shutdown` is set, then clears the display and
+/// puts it into deep sleep before exiting.
 pub fn spawn(cfg: EinkConfig, status: Arc<RwLock<SharedStatus>>, shutdown: Arc<AtomicBool>) {
     thread::spawn(move || {
-        eprintln!("eink: thread started — DC={}, RST={}, BUSY={}", cfg.dc_pin, cfg.rst_pin, cfg.busy_pin);
+        eprintln!(
+            "eink: thread started — DC={}, RST={}, BUSY={}",
+            cfg.dc_pin, cfg.rst_pin, cfg.busy_pin
+        );
         let mut display = match EinkDisplay::new(&cfg) {
             Ok(d) => d,
             Err(e) => {
                 eprintln!("eink: failed to open SPI/GPIO: {e}");
                 eprintln!("eink: is SPI enabled? (sudo raspi-config → Interfacing → SPI)");
-                eprintln!("eink: is your user in the spi/gpio groups? (sudo usermod -aG spi,gpio $USER)");
+                eprintln!(
+                    "eink: is your user in the spi/gpio groups? (sudo usermod -aG spi,gpio $USER)"
+                );
                 return;
             }
         };
@@ -526,7 +538,10 @@ pub fn spawn(cfg: EinkConfig, status: Arc<RwLock<SharedStatus>>, shutdown: Arc<A
             let timer_full = last_full.elapsed() >= refresh_interval;
 
             if needs_full || track_changed || play_changed || rec_changed || timer_full {
-                eprintln!("eink: full refresh (track_changed={track_changed} play={} rec={})", s.playing, s.recording);
+                eprintln!(
+                    "eink: full refresh (track_changed={track_changed} play={} rec={})",
+                    s.playing, s.recording
+                );
                 render(&mut fb, &s);
                 display.init();
                 display.display_full(&fb);
